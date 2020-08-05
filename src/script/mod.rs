@@ -5,7 +5,7 @@ use std::fs::read_to_string;
 use std::path::Path;
 use std::sync::Mutex;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use lazy_static::lazy_static;
 use rlua::prelude::*;
 
@@ -13,6 +13,129 @@ use crate::storage::Storage;
 
 lazy_static! {
     static ref STORAGE: Mutex<Storage> = Mutex::new(Storage::new().unwrap());
+}
+
+#[derive(Clone, Copy)]
+struct LogRef(i32);
+
+impl LuaUserData for LogRef {
+    fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_method("get", |_, r, ()| {
+            Ok(STORAGE
+                .lock()
+                .unwrap()
+                .get_log(r.0)
+                .map_err(LuaError::external)?)
+        });
+
+        methods.add_meta_function(LuaMetaMethod::Index, |ctx, (r, field): (LogRef, String)| {
+            let log = STORAGE
+                .lock()
+                .unwrap()
+                .get_log(r.0)
+                .map_err(LuaError::external)?;
+            match field.as_str() {
+                "name" => Ok(log.name.to_lua(ctx)),
+                "type" => Ok(log.typ.to_lua(ctx)),
+                "desc" => Ok(log.desc.to_lua(ctx)),
+                "obj" => Ok(log.obj.to_lua(ctx)),
+                "time" => Ok(log.time.to_string().to_lua(ctx)),
+                "timestamp" => Ok(log.time.timestamp().to_lua(ctx)),
+                "id" => Ok(r.0.to_lua(ctx)),
+                _ => return Err(LuaError::external(anyhow!("Unknown field: {}", field))),
+            }
+        });
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ObjRef(i32);
+
+impl LuaUserData for ObjRef {
+    fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_method("add_sub", |_, r, obj| {
+            Ok(STORAGE
+                .lock()
+                .unwrap()
+                .obj_add_sub(r.0, obj)
+                .map_err(LuaError::external)?)
+        });
+        methods.add_method("add_ref", |_, r, obj| {
+            Ok(STORAGE
+                .lock()
+                .unwrap()
+                .obj_add_ref(r.0, obj)
+                .map_err(LuaError::external)?)
+        });
+        methods.add_method("add_dep", |_, r, obj| {
+            Ok(STORAGE
+                .lock()
+                .unwrap()
+                .obj_add_dep(r.0, obj)
+                .map_err(LuaError::external)?)
+        });
+        methods.add_method("set_attr", |_, r, (key, val): (String, String)| {
+            Ok(STORAGE
+                .lock()
+                .unwrap()
+                .obj_set_attr(r.0, &key, &val)
+                .map_err(LuaError::external)?)
+        });
+        methods.add_method("remove_sub", |_, r, obj| {
+            Ok(STORAGE
+                .lock()
+                .unwrap()
+                .obj_remove_sub(r.0, obj)
+                .map_err(LuaError::external)?)
+        });
+        methods.add_method("remove_ref", |_, r, obj| {
+            Ok(STORAGE
+                .lock()
+                .unwrap()
+                .obj_remove_ref(r.0, obj)
+                .map_err(LuaError::external)?)
+        });
+        methods.add_method("remove_dep", |_, r, obj| {
+            Ok(STORAGE
+                .lock()
+                .unwrap()
+                .obj_remove_dep(r.0, obj)
+                .map_err(LuaError::external)?)
+        });
+        methods.add_method("remove_attr", |_, r, key: String| {
+            Ok(STORAGE
+                .lock()
+                .unwrap()
+                .obj_remove_attr(r.0, &key)
+                .map_err(LuaError::external)?)
+        });
+        methods.add_method("get", |_, r, ()| {
+            Ok(STORAGE
+                .lock()
+                .unwrap()
+                .get_obj(r.0)
+                .map_err(LuaError::external)?)
+        });
+
+        methods.add_meta_function(LuaMetaMethod::Index, |ctx, (r, field): (ObjRef, String)| {
+            let obj = STORAGE
+                .lock()
+                .unwrap()
+                .get_obj(r.0)
+                .map_err(LuaError::external)?;
+            match field.as_str() {
+                "name" => Ok(obj.name.to_lua(ctx)),
+                "type" => Ok(obj.typ.to_lua(ctx)),
+                "desc" => Ok(obj.desc.to_lua(ctx)),
+                "subs" => Ok(obj.subs.to_lua(ctx)),
+                "deps" => Ok(obj.deps.to_lua(ctx)),
+                "refs" => Ok(obj.refs.to_lua(ctx)),
+                "attrs" => Ok(obj.attrs.to_lua(ctx)),
+                "id" => Ok(r.0.to_lua(ctx)),
+                _ => return Err(LuaError::external(anyhow!("Unknown field: {}", field))),
+            }
+        });
+    }
 }
 
 pub struct ScriptContext {
@@ -50,6 +173,9 @@ impl ScriptContext {
     pub fn init_lib(&mut self) -> LuaResult<()> {
         self.lua.context(|ctx| {
             let globals = ctx.globals();
+            let sched_mod = ctx.create_table()?;
+            let obj_mod = ctx.create_table()?;
+            let log_mod = ctx.create_table()?;
             globals.set(
                 "pprint",
                 ctx.create_function(|ctx, lt| Ok(lua::pprint(&lt, &ctx)))?,
@@ -59,8 +185,8 @@ impl ScriptContext {
                 "readline",
                 ctx.create_function(|_, p| Ok(lua::readline(p)))?,
             )?;
-            globals.set(
-                "add_log",
+            log_mod.set(
+                "new",
                 ctx.create_function(
                     |ctx, (name, typ, map): (String, String, Option<HashMap<String, LuaValue>>)| {
                         let mut storage = STORAGE.lock().unwrap();
@@ -75,19 +201,19 @@ impl ScriptContext {
                                     .map_err(LuaError::external)?
                             }
                             if map.contains_key("obj") {
-                                let obj_ref =
-                                    i32::from_lua(map.get("obj").unwrap().clone(), ctx)?;
+                                let obj_ref = i32::from_lua(map.get("obj").unwrap().clone(), ctx)?;
                                 storage
                                     .log_set_obj(id, obj_ref)
                                     .map_err(LuaError::external)?;
                             }
                         }
-                        Ok(id)
+                        Ok(LogRef(id))
                     },
                 )?,
             )?;
-            globals.set(
-                "new_obj",
+            log_mod.set("get", ctx.create_function(|_, id: i32| Ok(LogRef(id)))?)?;
+            obj_mod.set(
+                "new",
                 ctx.create_function(
                     |ctx, (name, typ, map): (String, String, Option<HashMap<String, LuaValue>>)| {
                         let mut storage = STORAGE.lock().unwrap();
@@ -102,28 +228,15 @@ impl ScriptContext {
                                     .map_err(LuaError::external)?;
                             }
                         }
-                        Ok(id)
+                        Ok(ObjRef(id))
                     },
                 )?,
             )?;
-            globals.set(
-                "get_log",
-                ctx.create_function(|_, id: i32| {
-                    Ok(STORAGE.lock().unwrap().get_log(id).map_err(|e| {
-                        LuaError::external(dbg!(e))
-                    })?)
-                })?,
-            )?;
-            globals.set(
-                "get_obj",
-                ctx.create_function(|_, id: i32| {
-                    Ok(STORAGE
-                        .lock()
-                        .unwrap()
-                        .get_obj(id)
-                        .map_err(LuaError::external)?)
-                })?,
-            )?;
+            obj_mod.set("get", ctx.create_function(|_, id| Ok(ObjRef(id)))?)?;
+
+            sched_mod.set("obj", obj_mod)?;
+            sched_mod.set("log", log_mod)?;
+            globals.set("sched", sched_mod)?;
             Ok(())
         })
     }

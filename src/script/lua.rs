@@ -72,7 +72,7 @@ pub fn repl(ctx: LuaContext) {
 pub fn format_value<'lua>(v: &LuaValue<'lua>, ctx: &LuaContext<'lua>) -> String {
     let mut s = String::new();
     let mut formatter = LuaFormatter::new(2);
-    formatter.format_value(ctx, v, &mut s);
+    formatter.format_value(ctx, v, &mut s, false);
     s
 }
 
@@ -100,15 +100,33 @@ impl LuaFormatter {
         }
     }
 
-    fn format_value(&mut self, ctx: &LuaContext<'_>, v: &LuaValue<'_>, s: &mut String) {
+    fn format_value(
+        &mut self,
+        ctx: &LuaContext<'_>,
+        v: &LuaValue<'_>,
+        s: &mut String,
+        is_key: bool,
+    ) {
         match v {
             LuaValue::Nil => s.push_str("nil"),
             LuaValue::Boolean(b) => s.push_str(&b.to_string()),
             LuaValue::Integer(i) => s.push_str(&i.to_string()),
             LuaValue::Number(f) => s.push_str(&f.to_string()),
             LuaValue::String(_s) => match _s.to_str() {
-                Ok(_s) => s.push_str(_s),
-                Err(_) => s.push_str(&format!("{:?}", _s)),
+                Ok(_s) => {
+                    if is_key {
+                        s.push_str(&format!("{}", _s));
+                    } else {
+                        s.push_str(&format!("\"{}\"", _s));
+                    }
+                }
+                Err(_) => {
+                    if is_key {
+                        s.push_str(&format!("{:?}", _s));
+                    } else {
+                        s.push_str(&format!("\"{:?}\"", _s));
+                    }
+                }
             },
             LuaValue::LightUserData(d) => s.push_str(&format!("{:?}", d)),
             LuaValue::UserData(d) => s.push_str(&format!("{:?}", d)),
@@ -122,9 +140,9 @@ impl LuaFormatter {
                     let (key, val) = pair.unwrap();
                     s.push('\n');
                     s.push_str(&" ".repeat(self.indent * self.indent_size));
-                    self.format_value(ctx, &key, s);
+                    self.format_value(ctx, &key, s, true);
                     s.push_str(" = ");
-                    self.format_value(ctx, &val, s);
+                    self.format_value(ctx, &val, s, false);
                     self.has_value = true;
                     s.push(',');
                 }
