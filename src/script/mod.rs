@@ -53,6 +53,13 @@ struct ObjRef(i32);
 
 impl LuaUserData for ObjRef {
     fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_method("set_desc", |_, r, desc: String| {
+            Ok(STORAGE
+                .lock()
+                .unwrap()
+                .obj_set_desc(r.0, &desc)
+                .map_err(LuaError::external)?)
+        });
         methods.add_method("add_sub", |_, r, obj| {
             Ok(STORAGE
                 .lock()
@@ -81,32 +88,32 @@ impl LuaUserData for ObjRef {
                 .obj_set_attr(r.0, &key, &val)
                 .map_err(LuaError::external)?)
         });
-        methods.add_method("remove_sub", |_, r, obj| {
+        methods.add_method("del_sub", |_, r, obj| {
             Ok(STORAGE
                 .lock()
                 .unwrap()
-                .obj_remove_sub(r.0, obj)
+                .obj_del_sub(r.0, obj)
                 .map_err(LuaError::external)?)
         });
-        methods.add_method("remove_ref", |_, r, obj| {
+        methods.add_method("del_ref", |_, r, obj| {
             Ok(STORAGE
                 .lock()
                 .unwrap()
-                .obj_remove_ref(r.0, obj)
+                .obj_del_ref(r.0, obj)
                 .map_err(LuaError::external)?)
         });
-        methods.add_method("remove_dep", |_, r, obj| {
+        methods.add_method("del_dep", |_, r, obj| {
             Ok(STORAGE
                 .lock()
                 .unwrap()
-                .obj_remove_dep(r.0, obj)
+                .obj_del_dep(r.0, obj)
                 .map_err(LuaError::external)?)
         });
-        methods.add_method("remove_attr", |_, r, key: String| {
+        methods.add_method("del_attr", |_, r, key: String| {
             Ok(STORAGE
                 .lock()
                 .unwrap()
-                .obj_remove_attr(r.0, &key)
+                .obj_del_attr(r.0, &key)
                 .map_err(LuaError::external)?)
         });
         methods.add_method("get", |_, r, ()| {
@@ -239,11 +246,5 @@ impl ScriptContext {
             globals.set("sched", sched_mod)?;
             Ok(())
         })
-    }
-
-    pub fn repl(&self) {
-        self.lua.context(|ctx| {
-            lua::repl(ctx);
-        });
     }
 }
