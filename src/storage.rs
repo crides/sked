@@ -1,22 +1,20 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
-use bson::{doc, from_bson, document::ValueAccessError};
+use bson::{doc, document::ValueAccessError, from_bson, Document};
 use chrono::{DateTime, Utc};
 use mongodb::sync::{Client, Collection};
 
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Log {
-    pub name: String,
     #[serde(rename(deserialize = "type"))]
     pub typ: String,
     pub time: DateTime<Utc>,
-    pub desc: Option<String>,
-    pub obj: Option<ObjectRef>,
+    #[serde(default)]
+    pub attrs: HashMap<String, String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Object {
     pub name: String,
     #[serde(rename(deserialize = "type"))]
@@ -58,7 +56,7 @@ impl Storage {
         })
     }
 
-    pub fn create_log(&mut self, name: &str, typ: &str) -> Result<i32> {
+    pub fn create_log(&mut self, typ: &str, attrs: Document) -> Result<i32> {
         let id = self
             .ids
             .find_one_and_update(
@@ -69,25 +67,30 @@ impl Storage {
             .unwrap()
             .get_i32("id")
             .unwrap();
-        self.logs.insert_one(
-            doc! { "_id": id, "name": name, "type": typ, "time": Utc::now() },
-            None,
-        )?;
+        // let attrs = attrs.into_iter().map(|(k, v)| (k, Bson::String(v))).collect::<Document>();
+        if attrs.len() > 0 {
+            self.logs.insert_one(
+                doc! { "_id": id, "type": typ, "time": Utc::now(), "attrs": attrs },
+                None,
+            )?;
+        } else {
+            self.logs
+                .insert_one(doc! { "_id": id, "type": typ, "time": Utc::now() }, None)?;
+        }
         Ok(id)
     }
 
-    pub fn log_set_desc(&mut self, id: i32, desc: &str) -> Result<()> {
+    pub fn log_set_attr(&mut self, id: i32, key: &str, val: &str) -> Result<()> {
+        if key.contains('.') {
+            return Err(anyhow!("Invalid attr key: {}", key));
+        }
+        let key = format!("attrs.{}", key);
         self.logs.find_one_and_update(
-            doc! { "_id": id, "desc": { "$exists": false } },
-            doc! { "$set": { "desc": desc } },
+            doc! { "_id": id, key.clone(): { "$exists": false } },
+            doc! { "$set": { key.clone(): val } },
             None,
         )?;
-        Ok(())
-    }
-
-    pub fn log_set_obj(&mut self, id: i32, obj: ObjectRef) -> Result<()> {
-        self.logs
-            .find_one_and_update(doc! { "_id": id, "obj": { "$exists": false } }, doc! { "$set": { "obj": obj } }, None)?;
+        self.create_log("log.set_attr", doc! { "id": id, "attr": key })?;
         Ok(())
     }
 
@@ -100,11 +103,16 @@ impl Storage {
         // Github issue: https://github.com/mongodb/bson-rust/issues/191, and
         // tracking Jira in MongoDB: https://jira.mongodb.org/browse/RUST-506
         Ok(Log {
-            name: log.get_str("name").unwrap().into(),
             typ: log.get_str("type").unwrap().into(),
             time: log.get_datetime("time").unwrap().clone(),
-            desc: log.get_str("desc").ok().map(|s| s.into()),
-            obj: log.get_i32("obj").ok(),
+            attrs: log
+                .get_document("attrs")
+                .map(|d| {
+                    d.into_iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 
@@ -121,27 +129,25 @@ impl Storage {
             .unwrap();
         self.objs
             .insert_one(doc! { "_id": id, "name": name, "type": typ }, None)?;
-        self.create_log(&format!("Created object #{}", id), "obj.create")?;
+        self.create_log("obj.create", doc! { "id": id })?;
         Ok(id)
     }
 
     pub fn obj_set_desc(&mut self, id: ObjectRef, desc: &str) -> Result<()> {
-        let old_obj = self.objs.find_one_and_update(
-            doc! { "_id": id },
-            doc! { "$set": { "desc": desc } },
-            None,
-        )?.unwrap();
-        match old_obj.get_str("desc") {
+        let old_obj = self
+            .objs
+            .find_one_and_update(doc! { "_id": id }, doc! { "$set": { "desc": desc } }, None)?
+            .unwrap();
+        let attrs = match old_obj.get_str("desc") {
             Ok(old) => {
-                let id = self.create_log(&format!("Changed description for obj #{}", id), "obj.set_desc")?;
-                self.log_set_desc(id, &format!("Old description:\n {}\n\nNew description:\n {}", old, desc))?;
+                doc! { "id": id, "old": old, "new": desc }
             }
             Err(ValueAccessError::NotPresent) => {
-                let id = self.create_log(&format!("Added description for obj #{}", id), "obj.set_desc")?;
-                self.log_set_desc(id, &format!("New description:\n {}", desc))?;
+                doc! { "id": id, "new": desc }
             }
             _ => unreachable!(),
-        }
+        };
+        self.create_log("obj.set_desc", attrs)?;
         Ok(())
     }
 
@@ -151,7 +157,7 @@ impl Storage {
             doc! { "$addToSet": { "deps": dep } },
             None,
         )?;
-        self.create_log(&format!("Added dependency #{} for object #{}", dep, id), "obj.add_dep")?;
+        self.create_log("obj.add_dep", doc! { "id": id, "dep": dep })?;
         Ok(())
     }
 
@@ -161,7 +167,7 @@ impl Storage {
             doc! { "$addToSet": { "subs": sub } },
             None,
         )?;
-        self.create_log(&format!("Added subobject #{} for object #{}", sub, id), "obj.add_sub")?;
+        self.create_log("obj.add_sub", doc! { "sub": sub, "id": id })?;
         Ok(())
     }
 
@@ -171,7 +177,7 @@ impl Storage {
             doc! { "$addToSet": { "refs": rf } },
             None,
         )?;
-        self.create_log(&format!("Added reference #{} for object #{}", rf, id), "obj.add_ref")?;
+        self.create_log("obj.add_ref", doc! { "ref": rf, "id": id })?;
         Ok(())
     }
 
@@ -179,22 +185,27 @@ impl Storage {
         if key.contains('.') {
             return Err(anyhow!("Invalid attr key: {}", key));
         }
-        let old_obj = self.objs.find_one_and_update(
-            doc! { "_id": id },
-            doc! { "$set": { format!("attrs.{}", key): val } },
-            None,
-        )?.unwrap();
-        match old_obj.get_document("attrs").map(|d| d.get_str(key).unwrap()) {
+        let old_obj = self
+            .objs
+            .find_one_and_update(
+                doc! { "_id": id },
+                doc! { "$set": { format!("attrs.{}", key): val } },
+                None,
+            )?
+            .unwrap();
+        let attrs = match old_obj
+            .get_document("attrs")
+            .map(|d| d.get_str(key).unwrap())
+        {
             Ok(old) => {
-                let id = self.create_log(&format!("Changed attribute '{}' for obj #{}", key, id), "obj.set_attr")?;
-                self.log_set_desc(id, &format!("Old value:\n {}\n\nNew value:\n {}", old, val))?;
+                doc! { "key": key, "id": id, "old": old, "new": val }
             }
             Err(ValueAccessError::NotPresent) => {
-                let id = self.create_log(&format!("Set attribute '{}' for obj #{}", key, id), "obj.set_desc")?;
-                self.log_set_desc(id, &format!("New value:\n {}", val))?;
+                doc! { "key": key, "id": id, "new": val }
             }
             _ => unreachable!(),
-        }
+        };
+        self.create_log("obj.set_attr", attrs)?;
         Ok(())
     }
 
@@ -204,7 +215,7 @@ impl Storage {
             doc! { "$pull": { "deps": dep } },
             None,
         )?;
-        self.create_log(&format!("Deleted dependency #{} for object #{}", dep, id), "obj.del_dep")?;
+        self.create_log("obj.del_dep", doc! { "dep": dep, "id": id })?;
         Ok(())
     }
 
@@ -214,7 +225,7 @@ impl Storage {
             doc! { "$pull": { "subs": sub } },
             None,
         )?;
-        self.create_log(&format!("Deleted subobject #{} for object #{}", sub, id), "obj.del_sub")?;
+        self.create_log("obj.del_sub", doc! { "sub": sub, "id": id })?;
         Ok(())
     }
 
@@ -224,7 +235,7 @@ impl Storage {
             doc! { "$pull": { "refs": rf } },
             None,
         )?;
-        self.create_log(&format!("Deleted reference #{} for object #{}", rf, id), "obj.del_ref")?;
+        self.create_log("obj.del_ref", doc! { "ref": rf, "id": id })?;
         Ok(())
     }
 
@@ -232,15 +243,20 @@ impl Storage {
         if key.contains('.') {
             return Err(anyhow!("Invalid attr key: {}", key));
         }
-        let old_obj = self.objs.find_one_and_update(
-            doc! { "_id": id },
-            doc! { "$unset": { format!("attrs.{}", key): 0 } },
-            None,
-        )?.unwrap();
-        match old_obj.get_document("attrs").map(|d| d.get_str(key).unwrap()) {
+        let old_obj = self
+            .objs
+            .find_one_and_update(
+                doc! { "_id": id },
+                doc! { "$unset": { format!("attrs.{}", key): 0 } },
+                None,
+            )?
+            .unwrap();
+        match old_obj
+            .get_document("attrs")
+            .map(|d| d.get_str(key).unwrap())
+        {
             Ok(old) => {
-                let id = self.create_log(&format!("Deleted attribute '{}' for obj #{}", key, id), "obj.set_attr")?;
-                self.log_set_desc(id, &format!("Old value:\n {}", old))?;
+                self.create_log("obj.del_attr", doc! { "id": id, "key": key, "old": old })?;
             }
             _ => (),
         }

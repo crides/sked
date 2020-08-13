@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
+use bson::{Document, Bson};
 use lazy_static::lazy_static;
 use rlua::prelude::*;
 
@@ -20,6 +21,13 @@ struct LogRef(i32);
 
 impl LuaUserData for LogRef {
     fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
+        methods.add_method("set_attr", |_, r, (key, val): (String, String)| {
+            Ok(STORAGE
+                .lock()
+                .unwrap()
+                .log_set_attr(r.0, &key, &val)
+                .map_err(LuaError::external)?)
+        });
         methods.add_method("get", |_, r, ()| {
             Ok(STORAGE
                 .lock()
@@ -35,10 +43,8 @@ impl LuaUserData for LogRef {
                 .get_log(r.0)
                 .map_err(LuaError::external)?;
             match field.as_str() {
-                "name" => Ok(log.name.to_lua(ctx)),
                 "type" => Ok(log.typ.to_lua(ctx)),
-                "desc" => Ok(log.desc.to_lua(ctx)),
-                "obj" => Ok(log.obj.to_lua(ctx)),
+                "attrs" => Ok(log.attrs.to_lua(ctx)),
                 "time" => Ok(log.time.to_string().to_lua(ctx)),
                 "timestamp" => Ok(log.time.timestamp().to_lua(ctx)),
                 "id" => Ok(r.0.to_lua(ctx)),
@@ -193,27 +199,14 @@ impl ScriptContext {
                 ctx.create_function(|_, p| Ok(lua::readline(p)))?,
             )?;
             log_mod.set(
-                "new",
+                "_new",
                 ctx.create_function(
-                    |ctx, (name, typ, map): (String, String, Option<HashMap<String, LuaValue>>)| {
+                    |_, (typ, map): (String, Option<HashMap<String, String>>)| {
                         let mut storage = STORAGE.lock().unwrap();
+                        let attrs = map.map(|m| m.into_iter().map(|(k, v)| (k, Bson::String(v))).collect::<Document>()).unwrap_or_default();
                         let id = storage
-                            .create_log(&name, &typ)
+                            .create_log(&typ, attrs)
                             .map_err(LuaError::external)?;
-                        if let Some(map) = map {
-                            if map.contains_key("desc") {
-                                let desc = String::from_lua(map.get("desc").unwrap().clone(), ctx)?;
-                                storage
-                                    .log_set_desc(id, &desc)
-                                    .map_err(LuaError::external)?
-                            }
-                            if map.contains_key("obj") {
-                                let obj_ref = i32::from_lua(map.get("obj").unwrap().clone(), ctx)?;
-                                storage
-                                    .log_set_obj(id, obj_ref)
-                                    .map_err(LuaError::external)?;
-                            }
-                        }
                         Ok(LogRef(id))
                     },
                 )?,
