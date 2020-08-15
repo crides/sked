@@ -12,11 +12,11 @@ chrono = { version = "0.4.13", features = ["serde"] }
 # clap = "*"
 mongodb = { version = "1.1.0-beta", default-features = false, features = ["sync"] }
 bson = "1.1.0-beta"
-rlua = "0.17.0"
+rlua_serde = { version = "0.4.0", path = "../rlua_serde" }
+rlua = { version = "0.17.0", path = "../rlua" }
 rustyline = "6.2.0"
 serde = "1.0.115"
 serde_derive = "1.0.115"
-rlua_serde = "0.4.0"
 lazy_static = "1.4.0"
 dirs = "3.0.1"
 either = "1.6.0"
