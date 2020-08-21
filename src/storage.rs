@@ -4,6 +4,9 @@ use anyhow::{anyhow, Result};
 use bson::{doc, document::ValueAccessError, from_bson, Document};
 use chrono::{DateTime, Utc};
 use mongodb::sync::{Client, Collection};
+use rlua::prelude::*;
+
+use crate::event::EventHandlers;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Log {
@@ -32,14 +35,15 @@ pub struct Object {
 
 pub type ObjectRef = i32;
 
-pub struct Storage {
+pub struct Storage<'lua> {
     ids: Collection,
     logs: Collection,
     objs: Collection,
+    handlers: EventHandlers<'lua>
 }
 
-impl Storage {
-    pub fn new() -> Result<Storage> {
+impl<'lua> Storage<'lua> {
+    pub fn new() -> Result<Storage<'lua>> {
         let client = Client::with_uri_str("mongodb://localhost:27017/")?;
         let db = client.database("sched");
         let ids = db.collection("ids");
@@ -53,7 +57,12 @@ impl Storage {
             ids,
             logs: db.collection("logs"),
             objs: db.collection("objs"),
+            handlers: EventHandlers::new(),
         })
+    }
+
+    pub fn add_lua(&mut self, pat: &str, f: LuaFunction<'lua>) -> Result<()> {
+        self.handlers.add_lua(pat, f)
     }
 
     pub fn create_log(&mut self, typ: &str, attrs: Document) -> Result<i32> {
@@ -77,6 +86,9 @@ impl Storage {
             self.logs
                 .insert_one(doc! { "_id": id, "type": typ, "time": Utc::now() }, None)?;
         }
+
+        // FIXME optimize this
+        self.handlers.handle(&self.get_log(id)?);
         Ok(id)
     }
 

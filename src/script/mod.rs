@@ -9,12 +9,11 @@ use anyhow::{anyhow, Result};
 use bson::{Bson, Document};
 use rlua::prelude::*;
 
-use crate::event::EventHandlers;
 use crate::storage::Storage;
 
-struct LogRef(Arc<Mutex<Storage>>, i32);
+struct LogRef<'func>(Arc<Mutex<Storage<'func>>>, i32);
 
-impl LuaUserData for LogRef {
+impl<'func> LuaUserData for LogRef<'func> {
     fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("set_attr", |_, rf, (key, val): (String, String)| {
             Ok(rf
@@ -51,9 +50,9 @@ impl LuaUserData for LogRef {
     }
 }
 
-struct ObjRef(Arc<Mutex<Storage>>, i32);
+struct ObjRef<'func>(Arc<Mutex<Storage<'func>>>, i32);
 
-impl LuaUserData for ObjRef {
+impl<'func> LuaUserData for ObjRef<'func> {
     fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("set_desc", |_, rf, desc: String| {
             Ok(rf
@@ -157,7 +156,7 @@ impl LuaUserData for ObjRef {
     }
 }
 
-struct APIState<'func>(Arc<Mutex<Storage>>, EventHandlers<'func>);
+struct APIState<'func>(Arc<Mutex<Storage<'func>>>);
 
 impl<'func> LuaUserData for APIState<'func> {
     fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
@@ -204,8 +203,9 @@ impl<'func> LuaUserData for APIState<'func> {
             Ok(ObjRef(Arc::clone(&state.0), id))
         });
 
-        methods.add_method("add_event_handler", |_, state, (pat, func): (String, LuaFunction)| {
-            state.1.add_lua(&pat, func);
+        methods.add_method_mut("add_event_handler", |_, state, (pat, func): (String, LuaFunction<'lua>)| {
+            // FIXME See https://github.com/amethyst/rlua/issues/185
+            state.0.lock().unwrap().add_lua(&pat, unsafe { std::mem::transmute(func) }).map_err(LuaError::external)?;
             Ok(())
         });
     }
@@ -259,7 +259,6 @@ impl ScriptContext {
                 "sched",
                 APIState(
                     Arc::new(Mutex::new(Storage::new().map_err(LuaError::external)?)),
-                    EventHandlers::new(),
                 ),
             )?;
             Ok(())
