@@ -1,267 +1,185 @@
-mod lua;
+mod util;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+use std::fmt;
 use std::fs::read_to_string;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Result};
 use bson::{Bson, Document};
-use rlua::prelude::*;
+use gluon::{
+    import::add_extern_module, new_vm, vm::ExternModule, Result as GluonResult,
+    RootedThread, Thread, ThreadExt,
+};
+use gluon_codegen::*;
+use lazy_static::lazy_static;
 
-use crate::storage::Storage;
+use crate::storage::{Error, Log, Object, Result as StorageResult, Storage};
 
-struct LogRef<'func>(Arc<Mutex<Storage<'func>>>, i32);
-
-impl<'func> LuaUserData for LogRef<'func> {
-    fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
-        methods.add_method("set_attr", |_, rf, (key, val): (String, String)| {
-            Ok(rf
-                .0
-                .lock()
-                .unwrap()
-                .log_set_attr(rf.1, &key, &val)
-                .map_err(LuaError::external)?)
-        });
-        methods.add_method("get", |_, rf, ()| {
-            Ok(rf
-                .0
-                .lock()
-                .unwrap()
-                .get_log(rf.1)
-                .map_err(LuaError::external)?)
-        });
-
-        methods.add_meta_method(LuaMetaMethod::Index, |ctx, rf, field: String| {
-            let log =
-                rf.0.lock()
-                    .unwrap()
-                    .get_log(rf.1)
-                    .map_err(LuaError::external)?;
-            match field.as_str() {
-                "type" => Ok(log.typ.to_lua(ctx)),
-                "attrs" => Ok(log.attrs.to_lua(ctx)),
-                "time" => Ok(log.time.to_string().to_lua(ctx)),
-                "timestamp" => Ok(log.time.timestamp().to_lua(ctx)),
-                "id" => Ok(rf.1.to_lua(ctx)),
-                _ => return Err(LuaError::external(anyhow!("Unknown field: {}", field))),
-            }
-        });
-    }
+lazy_static! {
+    pub static ref STATE: APIState = APIState(Arc::new(Mutex::new(Storage::new())));
 }
 
-struct ObjRef<'func>(Arc<Mutex<Storage<'func>>>, i32);
+#[derive(Clone, Debug, Trace, VmType, Userdata)]
+#[gluon_trace(skip)]
+#[gluon(vm_type = "sched.LogRef")]
+struct LogRef(i32);
 
-impl<'func> LuaUserData for ObjRef<'func> {
-    fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
-        methods.add_method("set_desc", |_, rf, desc: String| {
-            Ok(rf
-                .0
-                .lock()
-                .unwrap()
-                .obj_set_desc(rf.1, &desc)
-                .map_err(LuaError::external)?)
-        });
-        methods.add_method("add_sub", |_, rf, obj| {
-            Ok(rf
-                .0
-                .lock()
-                .unwrap()
-                .obj_add_sub(rf.1, obj)
-                .map_err(LuaError::external)?)
-        });
-        methods.add_method("add_ref", |_, rf, obj| {
-            Ok(rf
-                .0
-                .lock()
-                .unwrap()
-                .obj_add_ref(rf.1, obj)
-                .map_err(LuaError::external)?)
-        });
-        methods.add_method("add_dep", |_, rf, obj| {
-            Ok(rf
-                .0
-                .lock()
-                .unwrap()
-                .obj_add_dep(rf.1, obj)
-                .map_err(LuaError::external)?)
-        });
-        methods.add_method("set_attr", |_, rf, (key, val): (String, String)| {
-            Ok(rf
-                .0
-                .lock()
-                .unwrap()
-                .obj_set_attr(rf.1, &key, &val)
-                .map_err(LuaError::external)?)
-        });
-        methods.add_method("del_sub", |_, rf, obj| {
-            Ok(rf
-                .0
-                .lock()
-                .unwrap()
-                .obj_del_sub(rf.1, obj)
-                .map_err(LuaError::external)?)
-        });
-        methods.add_method("del_ref", |_, rf, obj| {
-            Ok(rf
-                .0
-                .lock()
-                .unwrap()
-                .obj_del_ref(rf.1, obj)
-                .map_err(LuaError::external)?)
-        });
-        methods.add_method("del_dep", |_, rf, obj| {
-            Ok(rf
-                .0
-                .lock()
-                .unwrap()
-                .obj_del_dep(rf.1, obj)
-                .map_err(LuaError::external)?)
-        });
-        methods.add_method("del_attr", |_, rf, key: String| {
-            Ok(rf
-                .0
-                .lock()
-                .unwrap()
-                .obj_del_attr(rf.1, &key)
-                .map_err(LuaError::external)?)
-        });
-        methods.add_method("get", |_, rf, ()| {
-            Ok(rf
-                .0
-                .lock()
-                .unwrap()
-                .get_obj(rf.1)
-                .map_err(LuaError::external)?)
-        });
+#[derive(Clone, Debug, Trace, VmType, Userdata)]
+#[gluon_trace(skip)]
+#[gluon(vm_type = "sched.ObjRef")]
+struct ObjRef(i32);
 
-        methods.add_meta_method(LuaMetaMethod::Index, |ctx, rf, field: String| {
-            let obj =
-                rf.0.lock()
-                    .unwrap()
-                    .get_obj(rf.1)
-                    .map_err(LuaError::external)?;
-            match field.as_str() {
-                "name" => Ok(obj.name.to_lua(ctx)),
-                "type" => Ok(obj.typ.to_lua(ctx)),
-                "desc" => Ok(obj.desc.to_lua(ctx)),
-                "subs" => Ok(obj.subs.to_lua(ctx)),
-                "deps" => Ok(obj.deps.to_lua(ctx)),
-                "refs" => Ok(obj.refs.to_lua(ctx)),
-                "attrs" => Ok(obj.attrs.to_lua(ctx)),
-                "id" => Ok(rf.1.to_lua(ctx)),
-                _ => return Err(LuaError::external(anyhow!("Unknown field: {}", field))),
-            }
-        });
-    }
-}
+pub struct APIState(Arc<Mutex<Storage>>);
 
-struct APIState<'func>(Arc<Mutex<Storage<'func>>>);
+fn load_sched_mod(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
+    thread.register_type::<LogRef>("sched.LogRef", &[])?;
+    thread.register_type::<ObjRef>("sched.ObjRef", &[])?;
+    thread.register_type::<Error>("sched.Error", &[])?;
+    thread.register_type::<Object>("sched.Object", &[])?;
+    thread.register_type::<Log>("sched.Log", &[])?;
+    ExternModule::new(
+        thread,
+        record! {
+            log => record! {
+                type LogRef => LogRef,
+                set_attr => primitive!(3, |rf: &LogRef, key: String, val: String| {
+                    STATE
+                        .0
+                        .lock()
+                        .unwrap()
+                        .log_set_attr(rf.0, &key, &val)
+                }),
+                get => primitive!(1, |rf: &LogRef| {
+                    STATE
+                        .0
+                        .lock()
+                        .unwrap()
+                        .get_log(rf.0)
+                }),
+            },
 
-impl<'func> LuaUserData for APIState<'func> {
-    fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
-        methods.add_method(
-            "new_log",
-            |_, state, (typ, map): (String, Option<HashMap<String, String>>)| {
+            obj => record! {
+                type ObjRef => ObjRef,
+                set_desc => primitive!(2, |rf: &ObjRef, desc: String| {
+                    STATE
+                        .0
+                        .lock()
+                        .unwrap()
+                        .obj_set_desc(rf.0, &desc)
+                }),
+                add_sub => primitive!(2, |rf: &ObjRef, obj| {
+                    STATE
+                        .0
+                        .lock()
+                        .unwrap()
+                        .obj_add_sub(rf.0, obj)
+                }),
+                add_ref => primitive!(2, |rf: &ObjRef, obj| {
+                    STATE
+                        .0
+                        .lock()
+                        .unwrap()
+                        .obj_add_ref(rf.0, obj)
+                }),
+                add_dep => primitive!(2, |rf: &ObjRef, obj| {
+                    STATE
+                        .0
+                        .lock()
+                        .unwrap()
+                        .obj_add_dep(rf.0, obj)
+                }),
+                set_attr => primitive!(3, |rf: &ObjRef, key: String, val: String| {
+                    STATE
+                        .0
+                        .lock()
+                        .unwrap()
+                        .obj_set_attr(rf.0, &key, &val)
+                }),
+                del_sub => primitive!(2, |rf: &ObjRef, obj| {
+                    STATE
+                        .0
+                        .lock()
+                        .unwrap()
+                        .obj_del_sub(rf.0, obj)
+                }),
+                del_ref => primitive!(2, |rf: &ObjRef, obj| {
+                    STATE
+                        .0
+                        .lock()
+                        .unwrap()
+                        .obj_del_ref(rf.0, obj)
+                }),
+                del_dep => primitive!(2, |rf: &ObjRef, obj| {
+                    STATE
+                        .0
+                        .lock()
+                        .unwrap()
+                        .obj_del_dep(rf.0, obj)
+                }),
+                del_attr => primitive!(2, |rf: &ObjRef, key: String| {
+                    STATE
+                        .0
+                        .lock()
+                        .unwrap()
+                        .obj_del_attr(rf.0, &key)
+                }),
+                get => primitive!(1, |rf: &ObjRef| {
+                    STATE
+                        .0
+                        .lock()
+                        .unwrap()
+                        .get_obj(rf.0)
+                }),
+            },
+
+            new_log => primitive!(2, |typ: String, map: BTreeMap<String, String>| -> StorageResult<LogRef> {
                 let attrs = map
-                    .map(|m| {
-                        m.into_iter()
-                            .map(|(k, v)| (k, Bson::String(v)))
-                            .collect::<Document>()
-                    })
-                    .unwrap_or_default();
-                let id = state
+                    .into_iter()
+                    .map(|(k, v)| (k, Bson::String(v)))
+                    .collect::<Document>();
+                let id = STATE
                     .0
                     .lock()
                     .unwrap()
-                    .create_log(&typ, attrs)
-                    .map_err(LuaError::external)?;
-                Ok(LogRef(Arc::clone(&state.0), id))
-            },
-        );
-        methods.add_method("get_log", |_, state, id| {
-            Ok(LogRef(Arc::clone(&state.0), id))
-        });
-        methods.add_method(
-            "new_obj",
-            |_, state, (name, typ, map): (String, String, Option<HashMap<String, String>>)| {
-                let mut storage = state.0.lock().unwrap();
-                let id = storage
-                    .create_obj(&name, &typ)
-                    .map_err(LuaError::external)?;
-                if let Some(map) = map {
-                    if map.contains_key("desc") {
-                        storage
-                            .obj_set_desc(id, map.get("desc").unwrap())
-                            .map_err(LuaError::external)?;
-                    }
+                    .create_log(&typ, attrs)?;
+                Ok(LogRef(id))
+            }),
+            get_log => primitive!(1, |id| LogRef(id)),
+            new_obj => primitive!(3, |name: String, typ: String, map: BTreeMap<String, String>| -> StorageResult<ObjRef> {
+                let mut storage = STATE.0.lock().unwrap();
+                let id = storage.create_obj(&name, &typ)?;
+                if map.contains_key("desc") {
+                    storage.obj_set_desc(id, map.get("desc").unwrap())?;
                 }
-                Ok(ObjRef(Arc::clone(&state.0), id))
-            },
-        );
-        methods.add_method("get_obj", |_, state, id| {
-            Ok(ObjRef(Arc::clone(&state.0), id))
-        });
-
-        methods.add_method_mut("add_event_handler", |_, state, (pat, func): (String, LuaFunction<'lua>)| {
-            // FIXME See https://github.com/amethyst/rlua/issues/185
-            state.0.lock().unwrap().add_lua(&pat, unsafe { std::mem::transmute(func) }).map_err(LuaError::external)?;
-            Ok(())
-        });
-    }
+                Ok(ObjRef(id))
+            }),
+            get_obj => primitive!(1, |id| ObjRef(id)),
+            add_handler => primitive!(2, |pat, func| {
+                STATE.0.lock().unwrap().add_gluon(pat, func)
+            }),
+        },
+    )
 }
 
 pub struct ScriptContext {
-    lua: Lua,
+    pub vm: RootedThread,
 }
 
 impl ScriptContext {
-    pub fn new() -> Result<Self> {
-        Ok(Self { lua: Lua::new() })
+    pub fn new() -> Self {
+        let vm = new_vm();
+        vm.run_io(true);
+        add_extern_module(&vm, "sched", load_sched_mod);
+        vm.load_file("std/map").unwrap();
+        Self { vm }
     }
 
-    pub fn init_user<P: AsRef<Path>>(&self, config_dir: P) -> Result<()> {
+    pub fn init_user<P: AsRef<Path>>(&self, config_dir: P) -> GluonResult<()> {
         let config_dir = config_dir.as_ref();
-        let init_file = config_dir.join("init.lua");
-        let code = read_to_string(&init_file)?;
-        self.lua.context(|ctx| {
-            let globals = ctx.globals();
-            let package: LuaTable = globals.get("package").unwrap();
-            let package_path: String = package.get("path").unwrap();
-            let new_package_path = [
-                &package_path,
-                config_dir.join("?.lua").to_str().unwrap(),
-                config_dir.join("?/init.lua").to_str().unwrap(),
-            ]
-            .join(";");
-            package.set("path", new_package_path).unwrap();
-            ctx.load(&code)
-                .set_name(init_file.to_str().unwrap())
-                .unwrap()
-                .exec()
-        })?;
+        let init_file = config_dir.join("init.glu");
+        let script = read_to_string(&init_file)?;
+        self.vm.load_script(init_file.to_str().unwrap(), &script)?;
         Ok(())
-    }
-
-    pub fn init_lib(&mut self) -> LuaResult<()> {
-        self.lua.context(|ctx| {
-            let globals = ctx.globals();
-            globals.set(
-                "pprint",
-                ctx.create_function(|ctx, lt| Ok(lua::pprint(&lt, &ctx)))?,
-            )?;
-            globals.set("repl", ctx.create_function(|ctx, ()| Ok(lua::repl(ctx)))?)?;
-            globals.set(
-                "readline",
-                ctx.create_function(|_, p| Ok(lua::readline(p)))?,
-            )?;
-            globals.set(
-                "sched",
-                APIState(
-                    Arc::new(Mutex::new(Storage::new().map_err(LuaError::external)?)),
-                ),
-            )?;
-            Ok(())
-        })
     }
 }

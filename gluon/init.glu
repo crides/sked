@@ -1,0 +1,8 @@
+let sched @ { ? } = import! sched
+let map @ { ? } = import! std.map
+let io @ { ? } = import! std.io
+
+let m = map.singleton "desc" "just a test"
+io.println (show m)
+/* sched.show_map m */
+sched.new_log "test" m
