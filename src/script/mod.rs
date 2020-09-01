@@ -156,13 +156,19 @@ impl<'func> LuaUserData for ObjRef<'func> {
     }
 }
 
+#[derive(Clone)]
 struct APIState<'func>(Arc<Mutex<Storage<'func>>>);
 
+// FIXME These unsafe transmutes exist because `'func` and `'lua` are basically the same lifetime, as there is
+// only one of `Lua` and `APIState` initiated, but I don't know how to tell Rust that they are the same (yet?)
 impl<'func> LuaUserData for APIState<'func> {
     fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method(
             "new_log",
-            |_, state, (typ, map): (String, Option<HashMap<String, String>>)| {
+            |_,
+             state,
+             (typ, map): (String, Option<HashMap<String, String>>)|
+             -> LuaResult<LogRef> {
                 let attrs = map
                     .map(|m| {
                         m.into_iter()
@@ -176,15 +182,18 @@ impl<'func> LuaUserData for APIState<'func> {
                     .unwrap()
                     .create_log(&typ, attrs)
                     .map_err(LuaError::external)?;
-                Ok(LogRef(Arc::clone(&state.0), id))
+                Ok(unsafe { std::mem::transmute(LogRef(Arc::clone(&state.0), id)) })
             },
         );
-        methods.add_method("get_log", |_, state, id| {
-            Ok(LogRef(Arc::clone(&state.0), id))
+        methods.add_method("get_log", |_, state, id| -> LuaResult<LogRef> {
+            Ok(unsafe { std::mem::transmute(LogRef(Arc::clone(&state.0), id)) })
         });
         methods.add_method(
             "new_obj",
-            |_, state, (name, typ, map): (String, String, Option<HashMap<String, String>>)| {
+            |_,
+             state,
+             (name, typ, map): (String, String, Option<HashMap<String, String>>)|
+             -> LuaResult<ObjRef> {
                 let mut storage = state.0.lock().unwrap();
                 let id = storage
                     .create_obj(&name, &typ)
@@ -196,72 +205,62 @@ impl<'func> LuaUserData for APIState<'func> {
                             .map_err(LuaError::external)?;
                     }
                 }
-                Ok(ObjRef(Arc::clone(&state.0), id))
+                Ok(unsafe { std::mem::transmute(ObjRef(Arc::clone(&state.0), id)) })
             },
         );
-        methods.add_method("get_obj", |_, state, id| {
-            Ok(ObjRef(Arc::clone(&state.0), id))
+        methods.add_method("get_obj", |_, state, id| -> LuaResult<ObjRef> {
+            Ok(unsafe { std::mem::transmute(ObjRef(Arc::clone(&state.0), id)) })
         });
-
-        methods.add_method_mut("add_event_handler", |_, state, (pat, func): (String, LuaFunction<'lua>)| {
-            // FIXME See https://github.com/amethyst/rlua/issues/185
-            state.0.lock().unwrap().add_lua(&pat, unsafe { std::mem::transmute(func) }).map_err(LuaError::external)?;
-            Ok(())
-        });
+        methods.add_method_mut(
+            "add_handler",
+            |_, state, (pat, func): (String, LuaFunction<'lua>)| {
+                // FIXME See https://github.com/amethyst/rlua/issues/185
+                state
+                    .0
+                    .lock()
+                    .unwrap()
+                    .add_lua(&pat, unsafe { std::mem::transmute(func) })
+                    .map_err(LuaError::external)?;
+                Ok(())
+            },
+        );
     }
 }
 
-pub struct ScriptContext {
-    lua: Lua,
-}
-
-impl ScriptContext {
-    pub fn new() -> Result<Self> {
-        Ok(Self { lua: Lua::new() })
-    }
-
-    pub fn init_user<P: AsRef<Path>>(&self, config_dir: P) -> Result<()> {
-        let config_dir = config_dir.as_ref();
-        let init_file = config_dir.join("init.lua");
-        let code = read_to_string(&init_file)?;
-        self.lua.context(|ctx| {
-            let globals = ctx.globals();
-            let package: LuaTable = globals.get("package").unwrap();
-            let package_path: String = package.get("path").unwrap();
-            let new_package_path = [
-                &package_path,
-                config_dir.join("?.lua").to_str().unwrap(),
-                config_dir.join("?/init.lua").to_str().unwrap(),
-            ]
-            .join(";");
-            package.set("path", new_package_path).unwrap();
-            ctx.load(&code)
-                .set_name(init_file.to_str().unwrap())
-                .unwrap()
-                .exec()
-        })?;
+pub fn run_script(config_dir: &Path) -> Result<()> {
+    let lua = Lua::new();
+    let state = APIState(Arc::new(Mutex::new(Storage::new())));
+    lua.context(|ctx| -> LuaResult<()> {
+        let globals = ctx.globals();
+        globals.set(
+            "pprint",
+            ctx.create_function(|ctx, lt| Ok(lua::pprint(&lt, &ctx)))?,
+        )?;
+        globals.set("repl", ctx.create_function(|ctx, ()| Ok(lua::repl(ctx)))?)?;
+        globals.set(
+            "readline",
+            ctx.create_function(|_, p| Ok(lua::readline(p)))?,
+        )?;
+        globals.set("sched", APIState(Arc::clone(&state.0)))?;
         Ok(())
-    }
-
-    pub fn init_lib(&mut self) -> LuaResult<()> {
-        self.lua.context(|ctx| {
-            let globals = ctx.globals();
-            globals.set(
-                "pprint",
-                ctx.create_function(|ctx, lt| Ok(lua::pprint(&lt, &ctx)))?,
-            )?;
-            globals.set("repl", ctx.create_function(|ctx, ()| Ok(lua::repl(ctx)))?)?;
-            globals.set(
-                "readline",
-                ctx.create_function(|_, p| Ok(lua::readline(p)))?,
-            )?;
-            globals.set(
-                "sched",
-                APIState(
-                    Arc::new(Mutex::new(Storage::new().map_err(LuaError::external)?)),
-                ),
-            )?;
-            Ok(())
-        })
-    }
+    })?;
+    let init_file = config_dir.join("init.lua");
+    let code = read_to_string(&init_file)?;
+    lua.context(|ctx| {
+        let globals = ctx.globals();
+        let package: LuaTable = globals.get("package").unwrap();
+        let package_path: String = package.get("path").unwrap();
+        let new_package_path = [
+            &package_path,
+            config_dir.join("?.lua").to_str().unwrap(),
+            config_dir.join("?/init.lua").to_str().unwrap(),
+        ]
+        .join(";");
+        package.set("path", new_package_path).unwrap();
+        ctx.load(&code)
+            .set_name(init_file.to_str().unwrap())
+            .unwrap()
+            .exec()
+    })?;
+    Ok(())
 }
