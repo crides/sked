@@ -3,7 +3,6 @@ extern crate serde_derive;
 #[macro_use]
 extern crate thiserror;
 
-mod event;
 mod script;
 mod storage;
 

@@ -8,12 +8,13 @@ use std::sync::{Arc, Mutex};
 use anyhow::{anyhow, Result};
 use bson::{Bson, Document};
 use rlua::prelude::*;
+use regex::Regex;
 
-use crate::storage::Storage;
+use crate::storage::{Storage, LuaRegex};
 
-struct LogRef<'func>(Arc<Mutex<Storage<'func>>>, i32);
+struct LogRef(Arc<Mutex<Storage>>, i32);
 
-impl<'func> LuaUserData for LogRef<'func> {
+impl LuaUserData for LogRef {
     fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("set_attr", |_, rf, (key, val): (String, String)| {
             Ok(rf
@@ -50,9 +51,9 @@ impl<'func> LuaUserData for LogRef<'func> {
     }
 }
 
-struct ObjRef<'func>(Arc<Mutex<Storage<'func>>>, i32);
+struct ObjRef(Arc<Mutex<Storage>>, i32);
 
-impl<'func> LuaUserData for ObjRef<'func> {
+impl LuaUserData for ObjRef {
     fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method("set_desc", |_, rf, desc: String| {
             Ok(rf
@@ -157,11 +158,9 @@ impl<'func> LuaUserData for ObjRef<'func> {
 }
 
 #[derive(Clone)]
-struct APIState<'func>(Arc<Mutex<Storage<'func>>>);
+struct APIState(Arc<Mutex<Storage>>);
 
-// FIXME These unsafe transmutes exist because `'func` and `'lua` are basically the same lifetime, as there is
-// only one of `Lua` and `APIState` initiated, but I don't know how to tell Rust that they are the same (yet?)
-impl<'func> LuaUserData for APIState<'func> {
+impl LuaUserData for APIState {
     fn add_methods<'lua, M: LuaUserDataMethods<'lua, Self>>(methods: &mut M) {
         methods.add_method(
             "new_log",
@@ -182,11 +181,11 @@ impl<'func> LuaUserData for APIState<'func> {
                     .unwrap()
                     .create_log(&typ, attrs)
                     .map_err(LuaError::external)?;
-                Ok(unsafe { std::mem::transmute(LogRef(Arc::clone(&state.0), id)) })
+                Ok(LogRef(Arc::clone(&state.0), id))
             },
         );
         methods.add_method("get_log", |_, state, id| -> LuaResult<LogRef> {
-            Ok(unsafe { std::mem::transmute(LogRef(Arc::clone(&state.0), id)) })
+            Ok(LogRef(Arc::clone(&state.0), id))
         });
         methods.add_method(
             "new_obj",
@@ -205,22 +204,21 @@ impl<'func> LuaUserData for APIState<'func> {
                             .map_err(LuaError::external)?;
                     }
                 }
-                Ok(unsafe { std::mem::transmute(ObjRef(Arc::clone(&state.0), id)) })
+                Ok(ObjRef(Arc::clone(&state.0), id))
             },
         );
         methods.add_method("get_obj", |_, state, id| -> LuaResult<ObjRef> {
-            Ok(unsafe { std::mem::transmute(ObjRef(Arc::clone(&state.0), id)) })
+            Ok(ObjRef(Arc::clone(&state.0), id))
         });
         methods.add_method_mut(
             "add_handler",
-            |_, state, (pat, func): (String, LuaFunction<'lua>)| {
-                // FIXME See https://github.com/amethyst/rlua/issues/185
-                state
-                    .0
-                    .lock()
-                    .unwrap()
-                    .add_lua(&pat, unsafe { std::mem::transmute(func) })
-                    .map_err(LuaError::external)?;
+            |ctx, _state, (pat, func): (String, LuaFunction<'lua>)| {
+                let entry = ctx.create_table()?;
+                entry.set(1, LuaRegex(Regex::new(&pat).map_err(LuaError::external)?))?;
+                entry.set(2, func)?;
+                let handlers: LuaTable = ctx.named_registry_value("handlers")?;
+                handlers.set(handlers.len().unwrap() + 1, entry)?;
+                ctx.set_named_registry_value("handlers", handlers)?;
                 Ok(())
             },
         );
@@ -228,9 +226,9 @@ impl<'func> LuaUserData for APIState<'func> {
 }
 
 pub fn run_script(config_dir: &Path) -> Result<()> {
-    let lua = Lua::new();
     let state = APIState(Arc::new(Mutex::new(Storage::new())));
-    lua.context(|ctx| -> LuaResult<()> {
+    let storage = state.0.lock().unwrap();
+    storage.lua.context(|ctx| -> LuaResult<()> {
         let globals = ctx.globals();
         globals.set(
             "pprint",
@@ -242,11 +240,12 @@ pub fn run_script(config_dir: &Path) -> Result<()> {
             ctx.create_function(|_, p| Ok(lua::readline(p)))?,
         )?;
         globals.set("sched", APIState(Arc::clone(&state.0)))?;
+        ctx.set_named_registry_value("handlers", ctx.create_table()?)?;
         Ok(())
     })?;
     let init_file = config_dir.join("init.lua");
     let code = read_to_string(&init_file)?;
-    lua.context(|ctx| {
+    storage.lua.context(|ctx| {
         let globals = ctx.globals();
         let package: LuaTable = globals.get("package").unwrap();
         let package_path: String = package.get("path").unwrap();

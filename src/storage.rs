@@ -4,8 +4,12 @@ use bson::{doc, document::ValueAccessError, from_bson, Bson, Document};
 use chrono::{DateTime, Utc};
 use mongodb::sync::{Client, Collection};
 use rlua::prelude::*;
+use regex::Regex;
 
-use crate::event::EventHandlers;
+#[derive(Clone)]
+pub struct LuaRegex(pub Regex);
+
+impl LuaUserData for LuaRegex {}
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -48,15 +52,15 @@ pub struct Object {
 
 pub type ObjectRef = i32;
 
-pub struct Storage<'lua> {
+pub struct Storage {
     ids: Collection,
     logs: Collection,
     objs: Collection,
-    handlers: EventHandlers<'lua>,
+    pub lua: Lua,
 }
 
-impl<'lua> Storage<'lua> {
-    pub fn new() -> Storage<'lua> {
+impl Storage {
+    pub fn new() -> Storage {
         let client =
             Client::with_uri_str("mongodb://localhost:27017/").expect("Can't connect to server");
         let db = client.database("sched");
@@ -82,12 +86,8 @@ impl<'lua> Storage<'lua> {
             ids,
             logs: db.collection("logs"),
             objs: db.collection("objs"),
-            handlers: EventHandlers::new(),
+            lua: Lua::new(),
         }
-    }
-
-    pub fn add_lua(&mut self, pat: &str, f: LuaFunction<'lua>) -> Result<()> {
-        self.handlers.add_lua(pat, f)
     }
 
     pub fn create_log(&mut self, typ: &str, attrs: Document) -> Result<i32> {
@@ -118,7 +118,18 @@ impl<'lua> Storage<'lua> {
 
         // FIXME optimize this
         let log = self.get_log(id)?;
-        self.handlers.handle(&log);
+        self.lua.context(|ctx| {
+            let handlers: LuaTable = ctx.named_registry_value("handlers").unwrap();
+            for i in 0..handlers.len().unwrap() {
+                let handler: LuaTable = handlers.get(i).unwrap();
+                let regex: LuaRegex = handler.get(1).unwrap();
+                let func: LuaFunction = handler.get(2).unwrap();
+                let is_match = regex.0.is_match(&log.typ);
+                if is_match {
+                    let _: LuaResult<()> = func.call(log.clone());
+                }
+            }
+        });
         Ok(id)
     }
 
