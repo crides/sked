@@ -9,6 +9,7 @@ use crate::event::{EventHandlers, Handler};
 
 #[derive(Clone, Debug, Trace, VmType, Userdata, Serialize, Deserialize)]
 #[gluon_trace(skip)]
+#[gluon_userdata(clone)]
 #[gluon(vm_type = "sched.Error")]
 pub enum Error {
     Regex(String),
@@ -19,57 +20,50 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Clone, Debug, Trace, VmType, Serialize, Deserialize)]
+#[derive(Clone, Debug, Trace, VmType)]
 #[gluon_trace(skip)]
-#[gluon(vm_type = "sched.Log")]
+#[gluon(vm_type = "sched.DateTime")]
+pub struct GluonDateTime(pub DateTime<Utc>);
+
+#[derive(Clone, Debug, Trace, VmType)]
+#[gluon_trace(skip)]
 pub struct Log {
     pub id: i32,
     pub typ: String,
-    pub time: DateTime<Utc>,
+    pub time: GluonDateTime,
     pub attrs: BTreeMap<String, String>,
 }
 
 impl<'vm> Pushable<'vm> for Log {
     fn vm_push(self, context: &mut ActiveThread<'vm>) -> GluonResult<()> {
         (record! {
-            r#type => self.typ,
-            attrs => self.attrs,
-            time => self.time.to_string(),
-            timestamp => self.time.timestamp(),
             id => self.id,
+            r#type => self.typ,
+            // time => self.time.0.to_string(),
+            time => self.time.0.timestamp(),
+            attrs => self.attrs,
         })
         .vm_push(context)
     }
 }
 
-#[derive(Clone, Debug, Trace, VmType, Serialize, Deserialize)]
+#[derive(Clone, Debug, Trace, VmType, Deserialize, Pushable)]
 #[gluon_trace(skip)]
-#[gluon(vm_type = "sched.Object")]
 pub struct Object {
+    #[serde(rename(deserialize = "_id"))]
     pub id: i32,
     pub name: String,
+    #[serde(rename(deserialize = "type"))]
     pub typ: String,
     pub desc: Option<String>,
+    #[serde(default)]
     pub deps: Vec<i32>,
+    #[serde(default)]
     pub subs: Vec<i32>,
+    #[serde(default)]
     pub refs: Vec<i32>,
+    #[serde(default)]
     pub attrs: BTreeMap<String, String>,
-}
-
-impl<'vm> Pushable<'vm> for Object {
-    fn vm_push(self, context: &mut ActiveThread<'vm>) -> GluonResult<()> {
-        (record! {
-            name => self.name,
-            r#type => self.typ,
-            desc => self.desc,
-            subs => self.subs,
-            deps => self.deps,
-            refs => self.refs,
-            attrs => self.attrs,
-            id => self.id,
-        })
-        .vm_push(context)
-    }
 }
 
 pub struct Storage {
@@ -81,25 +75,14 @@ pub struct Storage {
 
 impl Storage {
     pub fn new() -> Storage {
-        let client =
-            Client::with_uri_str("mongodb://localhost:27017/").expect("Can't connect to server");
+        let client = Client::with_uri_str("mongodb://localhost:27017/").expect("Can't connect to server");
         let db = client.database("sched");
         let ids = db.collection("ids");
-        if ids
-            .find_one(doc! { "_id": "logs_id" }, None)
-            .unwrap()
-            .is_none()
-        {
-            ids.insert_one(doc! { "_id": "logs_id", "id": 1i32 }, None)
-                .unwrap();
+        if ids.find_one(doc! { "_id": "logs_id" }, None).unwrap().is_none() {
+            ids.insert_one(doc! { "_id": "logs_id", "id": 1i32 }, None).unwrap();
         }
-        if ids
-            .find_one(doc! { "_id": "objs_id" }, None)
-            .unwrap()
-            .is_none()
-        {
-            ids.insert_one(doc! { "_id": "objs_id", "id": 1i32 }, None)
-                .unwrap();
+        if ids.find_one(doc! { "_id": "objs_id" }, None).unwrap().is_none() {
+            ids.insert_one(doc! { "_id": "objs_id", "id": 1i32 }, None).unwrap();
         }
         Storage {
             ids,
@@ -116,11 +99,7 @@ impl Storage {
     pub fn create_log(&mut self, typ: &str, attrs: Document) -> Result<i32> {
         let id = self
             .ids
-            .find_one_and_update(
-                doc! { "_id": "logs_id" },
-                doc! { "$inc": { "id": 1 } },
-                None,
-            )
+            .find_one_and_update(doc! { "_id": "logs_id" }, doc! { "$inc": { "id": 1 } }, None)
             .unwrap()
             .unwrap()
             .get_i32("id")
@@ -173,7 +152,7 @@ impl Storage {
         Ok(Log {
             id,
             typ: log.get_str("type").unwrap().into(),
-            time: log.get_datetime("time").unwrap().clone(),
+            time: GluonDateTime(log.get_datetime("time").unwrap().clone()),
             attrs: log
                 .get_document("attrs")
                 .map(|d| {
@@ -188,11 +167,7 @@ impl Storage {
     pub fn create_obj(&mut self, name: &str, typ: &str) -> Result<i32> {
         let id = self
             .ids
-            .find_one_and_update(
-                doc! { "_id": "objs_id" },
-                doc! { "$inc": { "id": 1 } },
-                None,
-            )
+            .find_one_and_update(doc! { "_id": "objs_id" }, doc! { "$inc": { "id": 1 } }, None)
             .unwrap()
             .unwrap()
             .get_i32("id")
@@ -225,11 +200,7 @@ impl Storage {
 
     pub fn obj_add_dep(&mut self, id: i32, dep: i32) -> Result<()> {
         self.objs
-            .find_one_and_update(
-                doc! { "_id": id },
-                doc! { "$addToSet": { "deps": dep } },
-                None,
-            )
+            .find_one_and_update(doc! { "_id": id }, doc! { "$addToSet": { "deps": dep } }, None)
             .unwrap();
         self.create_log("obj.add_dep", doc! { "id": id, "dep": dep })?;
         Ok(())
@@ -237,11 +208,7 @@ impl Storage {
 
     pub fn obj_add_sub(&mut self, id: i32, sub: i32) -> Result<()> {
         self.objs
-            .find_one_and_update(
-                doc! { "_id": id },
-                doc! { "$addToSet": { "subs": sub } },
-                None,
-            )
+            .find_one_and_update(doc! { "_id": id }, doc! { "$addToSet": { "subs": sub } }, None)
             .unwrap();
         self.create_log("obj.add_sub", doc! { "sub": sub, "id": id })?;
         Ok(())
@@ -249,11 +216,7 @@ impl Storage {
 
     pub fn obj_add_ref(&mut self, id: i32, rf: i32) -> Result<()> {
         self.objs
-            .find_one_and_update(
-                doc! { "_id": id },
-                doc! { "$addToSet": { "refs": rf } },
-                None,
-            )
+            .find_one_and_update(doc! { "_id": id }, doc! { "$addToSet": { "refs": rf } }, None)
             .unwrap();
         self.create_log("obj.add_ref", doc! { "ref": rf, "id": id })?;
         Ok(())
@@ -272,10 +235,7 @@ impl Storage {
             )
             .unwrap()
             .unwrap();
-        let attrs = match old_obj
-            .get_document("attrs")
-            .map(|d| d.get_str(key).unwrap())
-        {
+        let attrs = match old_obj.get_document("attrs").map(|d| d.get_str(key).unwrap()) {
             Ok(old) => {
                 doc! { "key": key, "id": id, "old": old, "new": val }
             }
@@ -325,10 +285,7 @@ impl Storage {
             )
             .unwrap()
             .unwrap();
-        match old_obj
-            .get_document("attrs")
-            .map(|d| d.get_str(key).unwrap())
-        {
+        match old_obj.get_document("attrs").map(|d| d.get_str(key).unwrap()) {
             Ok(old) => {
                 self.create_log("obj.del_attr", doc! { "id": id, "key": key, "old": old })?;
             }

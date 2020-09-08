@@ -1,31 +1,29 @@
-mod util;
-
 use std::collections::BTreeMap;
-use std::fmt;
 use std::fs::read_to_string;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use bson::{Bson, Document};
 use gluon::{
-    import::add_extern_module, new_vm, vm::ExternModule, Result as GluonResult,
-    RootedThread, Thread, ThreadExt,
+    import::add_extern_module, new_vm, vm::ExternModule, Result as GluonResult, RootedThread, Thread, ThreadExt,
 };
 use gluon_codegen::*;
 use lazy_static::lazy_static;
 
-use crate::storage::{Error, Log, Object, Result as StorageResult, Storage};
+use crate::storage::{Error, Log, Object, Result as StorageResult, Storage, GluonDateTime};
 
 lazy_static! {
     pub static ref STATE: APIState = APIState(Arc::new(Mutex::new(Storage::new())));
 }
 
 #[derive(Clone, Debug, Trace, VmType, Userdata)]
+#[gluon_userdata(clone)]
 #[gluon_trace(skip)]
 #[gluon(vm_type = "sched.LogRef")]
 struct LogRef(i32);
 
 #[derive(Clone, Debug, Trace, VmType, Userdata)]
+#[gluon_userdata(clone)]
 #[gluon_trace(skip)]
 #[gluon(vm_type = "sched.ObjRef")]
 struct ObjRef(i32);
@@ -36,11 +34,12 @@ fn load_sched_mod(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
     thread.register_type::<LogRef>("sched.LogRef", &[])?;
     thread.register_type::<ObjRef>("sched.ObjRef", &[])?;
     thread.register_type::<Error>("sched.Error", &[])?;
-    thread.register_type::<Object>("sched.Object", &[])?;
-    thread.register_type::<Log>("sched.Log", &[])?;
+    thread.register_type::<GluonDateTime>("sched.DateTime", &[])?;
     ExternModule::new(
         thread,
         record! {
+            type Log => Log,
+            type Object => Object,
             log => record! {
                 type LogRef => LogRef,
                 set_attr => primitive!(3, |rf: &LogRef, key: String, val: String| {

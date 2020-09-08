@@ -49,9 +49,11 @@ fn find_kind(args: WithVM<&str>) -> IO<Result<String, String>> {
     let args = args.value.trim();
     IO::Value(match vm.find_type_info(args) {
         Ok(ref alias) => {
-            let kind = alias.params().iter().rev().fold(Kind::typ(), |acc, arg| {
-                Kind::function(arg.kind.clone(), acc)
-            });
+            let kind = alias
+                .params()
+                .iter()
+                .rev()
+                .fold(Kind::typ(), |acc, arg| Kind::function(arg.kind.clone(), acc));
             Ok(format!("{}", kind))
         }
         Err(err) => Err(format!("{}", err)),
@@ -87,10 +89,7 @@ fn find_info(args: WithVM<&str>) -> IO<Result<String, String>> {
         }
     }
     let maybe_metadata = env.get_metadata(args).ok();
-    if let Some(comment) = maybe_metadata
-        .as_ref()
-        .and_then(|metadata| metadata.comment.as_ref())
-    {
+    if let Some(comment) = maybe_metadata.as_ref().and_then(|metadata| metadata.comment.as_ref()) {
         for line in comment.content.lines() {
             write!(&mut buffer, "\n/// {}", line).unwrap();
         }
@@ -141,9 +140,7 @@ impl rustyline::validate::Validator for Completer {
         let filemap = self.thread.get_database().add_filemap("line", line);
         let mut module = SymbolModule::new("line".into(), module_compiler.mut_symbols());
         match parse_partial_repl_line((*arena).borrow(), &mut module, &*filemap) {
-            Err((_, err)) if is_incomplete(&err) => {
-                Ok(rustyline::validate::ValidationResult::Incomplete)
-            }
+            Err((_, err)) if is_incomplete(&err) => Ok(rustyline::validate::ValidationResult::Incomplete),
             Ok(_) | Err(_) => Ok(rustyline::validate::ValidationResult::Valid(None)),
         }
     }
@@ -152,12 +149,7 @@ impl rustyline::validate::Validator for Completer {
 impl rustyline::completion::Completer for Completer {
     type Candidate = String;
 
-    fn complete(
-        &self,
-        _line: &str,
-        _pos: usize,
-        _: &rustyline::Context,
-    ) -> rustyline::Result<(usize, Vec<String>)> {
+    fn complete(&self, _line: &str, _pos: usize, _: &rustyline::Context) -> rustyline::Result<(usize, Vec<String>)> {
         Ok((0, Vec::new()))
     }
 }
@@ -173,11 +165,7 @@ impl rustyline::highlight::Highlighter for Completer {
         self.highlighter.highlight(line, pos)
     }
 
-    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(
-        &'s self,
-        prompt: &'p str,
-        default: bool,
-    ) -> Cow<'b, str> {
+    fn highlight_prompt<'b, 's: 'b, 'p: 'b>(&'s self, prompt: &'p str, default: bool) -> Cow<'b, str> {
         self.highlighter.highlight_prompt(prompt, default)
     }
 
@@ -194,11 +182,7 @@ impl rustyline::highlight::Highlighter for Completer {
         }
     }
 
-    fn highlight_candidate<'c>(
-        &self,
-        candidate: &'c str,
-        completion: rustyline::CompletionType,
-    ) -> Cow<'c, str> {
+    fn highlight_candidate<'c>(&self, candidate: &'c str, completion: rustyline::CompletionType) -> Cow<'c, str> {
         self.highlighter.highlight_candidate(candidate, completion)
     }
 
@@ -238,11 +222,7 @@ macro_rules! define_vmtype {
             type Type = $name;
             fn make_type(vm: &Thread) -> ArcType {
                 let typ = concat!("rustyline_types.", stringify!($name));
-                vm.get_env()
-                    .find_type_info(typ)
-                    .unwrap()
-                    .clone()
-                    .into_type()
+                vm.get_env().find_type_info(typ).unwrap().clone().into_type()
             }
         }
     };
@@ -262,17 +242,13 @@ const APP_INFO: app_dirs::AppInfo = app_dirs::AppInfo {
 };
 
 fn app_dir_root() -> Result<PathBuf, Box<dyn StdError>> {
-    Ok(::app_dirs::app_root(
-        app_dirs::AppDataType::UserData,
-        &APP_INFO,
-    )?)
+    Ok(::app_dirs::app_root(app_dirs::AppDataType::UserData, &APP_INFO)?)
 }
 
 fn new_editor(vm: WithVM<()>) -> IO<Editor> {
     let mut editor = rustyline::Editor::new();
 
-    let history_result =
-        app_dir_root().and_then(|path| Ok(editor.load_history(&*path.join("history"))?));
+    let history_result = app_dir_root().and_then(|path| Ok(editor.load_history(&*path.join("history"))?));
     editor.set_helper(Some(Completer {
         thread: vm.vm.root_thread(),
         hinter: rustyline::hint::HistoryHinter {},
@@ -308,8 +284,7 @@ fn eval_line(WithVM { vm, value: line }: WithVM<&str>) -> impl Future<Output = I
             .map(move |result| match result {
                 Ok(x) => IO::Value(x),
                 Err(err) => {
-                    let mut stderr =
-                        termcolor::StandardStream::stderr(termcolor::ColorChoice::Always);
+                    let mut stderr = termcolor::StandardStream::stderr(termcolor::ColorChoice::Always);
                     if let Err(err) = err.emit(&mut stderr) {
                         eprintln!("{}", err);
                     }
@@ -332,8 +307,7 @@ async fn eval_line_(vm: RootedThread, line: &str) -> gluon::Result<()> {
                 let repl_line = {
                     let result = {
                         let filemap = vm.get_database().add_filemap("line", line);
-                        let mut module =
-                            SymbolModule::new("line".into(), module_compiler.mut_symbols());
+                        let mut module = SymbolModule::new("line".into(), module_compiler.mut_symbols());
                         parse_partial_repl_line((*arena).borrow(), &mut module, &*filemap)
                     };
                     match result {
@@ -370,14 +344,9 @@ async fn eval_line_(vm: RootedThread, line: &str) -> gluon::Result<()> {
                             }
                         };
                         let id = pos::spanned2(0.into(), 0.into(), Expr::Ident(id.clone()));
-                        let expr = Expr::LetBindings(
-                            ast::ValueBindings::Plain(let_binding),
-                            arena.alloc(id),
-                        );
-                        let eval_expr = RootExpr::new(
-                            arena.clone(),
-                            arena.alloc(pos::spanned2(0.into(), 0.into(), expr)),
-                        );
+                        let expr = Expr::LetBindings(ast::ValueBindings::Plain(let_binding), arena.alloc(id));
+                        let eval_expr =
+                            RootExpr::new(arena.clone(), arena.alloc(pos::spanned2(0.into(), 0.into(), expr)));
                         eval_expr
                     }
                 }
@@ -441,9 +410,7 @@ fn set_globals(
             Ok(())
         }
         Pattern::Tuple { ref elems, .. } => {
-            let iter = elems
-                .iter()
-                .zip(gluon::vm::dynamic::field_iter(&value, typ, vm));
+            let iter = elems.iter().zip(gluon::vm::dynamic::field_iter(&value, typ, vm));
             for (elem_pattern, (elem_value, elem_type)) in iter {
                 set_globals(vm, db, elem_pattern, &elem_type, &elem_value)?;
             }
@@ -462,9 +429,7 @@ fn set_globals(
                 // there should have already been a type error. So we can just panic here
                 let field_value: RootedValue<&Thread> = value
                     .get_field(field_name.declared_name())
-                    .unwrap_or_else(|| {
-                        panic!("record doesn't have field `{}`", field_name.declared_name())
-                    });
+                    .unwrap_or_else(|| panic!("record doesn't have field `{}`", field_name.declared_name()));
                 let field_type = resolved_type
                     .row_iter()
                     .find(|f| f.name.name_eq(field_name))
@@ -478,9 +443,7 @@ fn set_globals(
                     .typ
                     .clone();
                 match pattern_value {
-                    Some(ref sub_pattern) => {
-                        set_globals(vm, db, sub_pattern, &field_type, &field_value)?
-                    }
+                    Some(ref sub_pattern) => set_globals(vm, db, sub_pattern, &field_type, &field_value)?,
                     None => db.set_global(
                         name.value.declared_name(),
                         field_type.to_owned(),
@@ -519,10 +482,8 @@ fn finish_or_interrupt(
         let _ = sender.send(());
     });
 
-    let mut action = OwnedFunction::<fn() -> IO<OpaqueValue<RootedThread, A>>>::from_value(
-        &thread,
-        action.get_variant(),
-    );
+    let mut action =
+        OwnedFunction::<fn() -> IO<OpaqueValue<RootedThread, A>>>::from_value(&thread, action.get_variant());
     let action_future = tokio::spawn(async move {
         action
             .call_async()
@@ -541,17 +502,19 @@ fn finish_or_interrupt(
 }
 
 fn save_history(editor: &Editor) -> IO<()> {
-    app_dir_root().and_then(|path| {
-        editor
-            .editor
-            .lock()
-            .unwrap()
-            .save_history(&*path.join("history"))
-            .map_err(|err| {
-                let err: Box<dyn StdError> = Box::new(err);
-                err
-            })
-    }).unwrap();
+    app_dir_root()
+        .and_then(|path| {
+            editor
+                .editor
+                .lock()
+                .unwrap()
+                .save_history(&*path.join("history"))
+                .map_err(|err| {
+                    let err: Box<dyn StdError> = Box::new(err);
+                    err
+                })
+        })
+        .unwrap();
     IO::Value(())
 }
 
@@ -596,8 +559,7 @@ fn compile_repl(vm: &Thread) -> Result<(), GluonError> {
     add_extern_module(vm, "repl.prim", load_repl);
     add_extern_module(vm, "rustyline", load_rustyline);
 
-    const REPL_SOURCE: &'static str =
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/repl.glu"));
+    const REPL_SOURCE: &'static str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/repl.glu"));
 
     vm.load_script("repl", REPL_SOURCE)?;
     Ok(())

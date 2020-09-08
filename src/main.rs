@@ -6,9 +6,9 @@ extern crate gluon;
 extern crate serde_derive;
 
 mod event;
+mod repl;
 mod script;
 mod storage;
-mod repl;
 
 use std::fs;
 
