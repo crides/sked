@@ -38,8 +38,7 @@ impl<'vm> Pushable<'vm> for Log {
     fn vm_push(self, context: &mut ActiveThread<'vm>) -> GluonResult<()> {
         (record! {
             id => self.id,
-            r#type => self.typ,
-            // time => self.time.0.to_string(),
+            typ => self.typ,
             time => self.time.0.timestamp(),
             attrs => self.attrs,
         })

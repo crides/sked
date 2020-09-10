@@ -1,8 +1,11 @@
-let sched @ { ? } = import! sched
+let { add_handler, new_log, ? } = import! sched
 let map @ { ? } = import! std.map
 let io @ { ? } = import! std.io
+let proc @ { ? } = import! std.process
+
+add_handler "test" (\l ->
+    seq proc.execute (proc.proc "notify-send" ["Sched", "test"])
+    io.wrap ())
 
 let m = map.singleton "desc" "just a test"
-/* io.println (show m) */
-/* sched.show_map m */
-sched.new_log "test" m
+new_log "test" m
