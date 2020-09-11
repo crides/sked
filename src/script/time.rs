@@ -1,5 +1,5 @@
-use chrono::{FixedOffset, Offset, Utc, Local};
-use gluon::{vm::ExternModule, Thread};
+use chrono::{FixedOffset, Local, Offset, Utc};
+use gluon::{vm::{ExternModule, api::Getable, Result as GluonResult, Variants}, Thread};
 use gluon_codegen::*;
 
 #[derive(Clone, Debug, Userdata, Trace, VmType)]
@@ -7,6 +7,19 @@ use gluon_codegen::*;
 #[gluon(vm_type = "time.DateTime")]
 #[gluon_trace(skip)]
 pub struct DateTime(pub chrono::DateTime<FixedOffset>);
+
+impl<'vm, 'value> Getable<'vm, 'value> for DateTime {
+    type Proxy = Variants<'value>;
+    fn to_proxy(_vm: &'vm Thread, value: Variants<'value>) -> GluonResult<Self::Proxy> {
+        Ok(value)
+    }
+    fn from_proxy(vm: &'vm Thread, proxy: &'value mut Self::Proxy) -> Self {
+        <Self as Getable<'vm, 'value>>::from_value(vm, proxy.clone())
+    }
+    fn from_value(vm: &'vm Thread, value: Variants<'value>) -> Self {
+        <&'value DateTime as Getable<'vm, 'value>>::from_value(vm, value).clone()
+    }
+}
 
 #[derive(Clone, Debug, Userdata, Trace, VmType)]
 #[gluon_userdata(clone)]

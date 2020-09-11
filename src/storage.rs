@@ -2,10 +2,9 @@ use std::collections::BTreeMap;
 
 use bson::{doc, document::ValueAccessError, from_bson, Document};
 use chrono::Utc;
-use gluon::vm::{api::Pushable, thread::ActiveThread, Result as GluonResult};
 use mongodb::sync::{Client, Collection};
 
-use crate::event::{EventHandlers, Handler};
+use crate::signal::{SignalHandlers, SignalHandler};
 use crate::script::time::DateTime as GluonDateTime;
 
 #[derive(Clone, Debug, Trace, VmType, Userdata, Serialize, Deserialize)]
@@ -21,7 +20,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Clone, Debug, Trace, VmType)]
+#[derive(Clone, Debug, Trace, VmType, Pushable, Getable)]
 #[gluon_trace(skip)]
 pub struct Log {
     pub id: i32,
@@ -30,19 +29,7 @@ pub struct Log {
     pub attrs: BTreeMap<String, String>,
 }
 
-impl<'vm> Pushable<'vm> for Log {
-    fn vm_push(self, context: &mut ActiveThread<'vm>) -> GluonResult<()> {
-        (record! {
-            id => self.id,
-            typ => self.typ,
-            time => self.time,
-            attrs => self.attrs,
-        })
-        .vm_push(context)
-    }
-}
-
-#[derive(Clone, Debug, Trace, VmType, Deserialize, Pushable)]
+#[derive(Clone, Debug, Trace, VmType, Deserialize, Pushable, Getable)]
 #[gluon_trace(skip)]
 pub struct Object {
     #[serde(rename(deserialize = "_id"))]
@@ -65,7 +52,7 @@ pub struct Storage {
     ids: Collection,
     logs: Collection,
     objs: Collection,
-    handlers: EventHandlers,
+    handlers: SignalHandlers,
 }
 
 impl Storage {
@@ -83,11 +70,11 @@ impl Storage {
             ids,
             logs: db.collection("logs"),
             objs: db.collection("objs"),
-            handlers: EventHandlers::new(),
+            handlers: SignalHandlers::new(),
         }
     }
 
-    pub fn add_gluon(&mut self, pat: &str, f: Handler) -> Result<()> {
+    pub fn add_gluon(&mut self, pat: &str, f: SignalHandler) -> Result<()> {
         self.handlers.add_gluon(pat, f)
     }
 

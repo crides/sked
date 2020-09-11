@@ -5,7 +5,7 @@ extern crate gluon;
 #[macro_use]
 extern crate serde_derive;
 
-mod event;
+mod signal;
 mod repl;
 mod script;
 mod storage;

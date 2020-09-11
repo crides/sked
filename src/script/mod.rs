@@ -17,9 +17,9 @@ impl ScriptContext {
     pub fn new() -> Self {
         let vm = new_vm();
         vm.run_io(true);
+        vm.load_file("std.map").unwrap();
         add_extern_module(&vm, "time", time::load);
         add_extern_module_with_deps(&vm, "sched", sched::load, vec!["time".into()]);
-        vm.load_file("std/map").unwrap();
         Self { vm }
     }
 

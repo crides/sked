@@ -3,22 +3,22 @@ use regex::Regex;
 
 use crate::storage::{Error, Log, Result};
 
-pub type Handler = OwnedFunction<fn(Log) -> IO<()>>;
+pub type SignalHandler = OwnedFunction<fn(Log) -> IO<()>>;
 
-pub struct EventHandler {
+pub struct SignalHandlerEntry {
     pat: Regex,
-    func: Handler,
+    func: SignalHandler,
 }
 
-pub struct EventHandlers(Vec<EventHandler>);
+pub struct SignalHandlers(Vec<SignalHandlerEntry>);
 
-impl EventHandlers {
-    pub fn new() -> EventHandlers {
-        EventHandlers(Vec::new())
+impl SignalHandlers {
+    pub fn new() -> SignalHandlers {
+        SignalHandlers(Vec::new())
     }
 
-    pub fn add_gluon(&mut self, pat: &str, func: Handler) -> Result<()> {
-        self.0.push(EventHandler {
+    pub fn add_gluon(&mut self, pat: &str, func: SignalHandler) -> Result<()> {
+        self.0.push(SignalHandlerEntry {
             pat: Regex::new(pat).map_err(|_| Error::Regex(pat.to_string()))?,
             func,
         });
