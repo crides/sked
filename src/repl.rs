@@ -248,7 +248,7 @@ fn app_dir_root() -> Result<PathBuf, Box<dyn StdError>> {
 fn new_editor(vm: WithVM<()>) -> IO<Editor> {
     let mut editor = rustyline::Editor::new();
 
-    let history_result = app_dir_root().and_then(|path| Ok(editor.load_history(&*path.join("history"))?));
+    let _ = app_dir_root().and_then(|path| Ok(editor.load_history(&*path.join("history"))?));
     editor.set_helper(Some(Completer {
         thread: vm.vm.root_thread(),
         hinter: rustyline::hint::HistoryHinter {},

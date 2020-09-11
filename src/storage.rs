@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
 use bson::{doc, document::ValueAccessError, from_bson, Document};
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use gluon::vm::{api::Pushable, thread::ActiveThread, Result as GluonResult};
 use mongodb::sync::{Client, Collection};
 
 use crate::event::{EventHandlers, Handler};
+use crate::script::time::DateTime as GluonDateTime;
 
 #[derive(Clone, Debug, Trace, VmType, Userdata, Serialize, Deserialize)]
 #[gluon_trace(skip)]
@@ -22,11 +23,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Clone, Debug, Trace, VmType)]
 #[gluon_trace(skip)]
-#[gluon(vm_type = "sched.DateTime")]
-pub struct GluonDateTime(pub DateTime<Utc>);
-
-#[derive(Clone, Debug, Trace, VmType)]
-#[gluon_trace(skip)]
 pub struct Log {
     pub id: i32,
     pub typ: String,
@@ -39,7 +35,7 @@ impl<'vm> Pushable<'vm> for Log {
         (record! {
             id => self.id,
             typ => self.typ,
-            time => self.time.0.timestamp(),
+            time => self.time,
             attrs => self.attrs,
         })
         .vm_push(context)
@@ -151,7 +147,7 @@ impl Storage {
         Ok(Log {
             id,
             typ: log.get_str("type").unwrap().into(),
-            time: GluonDateTime(log.get_datetime("time").unwrap().clone()),
+            time: GluonDateTime(log.get_datetime("time").unwrap().clone().into()),
             attrs: log
                 .get_document("attrs")
                 .map(|d| {

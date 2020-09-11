@@ -1,10 +1,13 @@
-let { add_handler, new_log, ? } = import! sched
+let { add_handler, new_log } = import! sched
+let time = import! time
 let map @ { ? } = import! std.map
 let io @ { ? } = import! std.io
 let proc @ { ? } = import! std.process
 
 add_handler "test" (\l ->
-    seq proc.execute (proc.proc "notify-send" ["Sched", "test"])
+    let t = time.to_local l.time
+    let urbit_time = time.format_datetime t "%Y.%m.%d..%H.%M.%S..%Z"
+    seq proc.execute (proc.proc "notify-send" ["Sched", urbit_time])
     io.wrap ())
 
 let m = map.singleton "desc" "just a test"
