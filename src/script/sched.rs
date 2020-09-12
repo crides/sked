@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use bson::{Bson, Document};
 use gluon::{vm::ExternModule, Thread};
@@ -8,74 +8,81 @@ use lazy_static::lazy_static;
 use crate::storage::{Error, Log, Object, Result as StorageResult, Storage};
 
 lazy_static! {
-    pub static ref STATE: APIState = APIState(Arc::new(Mutex::new(Storage::new())));
+    pub static ref STORE: Mutex<Storage> = Mutex::new(Storage::new());
 }
-
-pub struct APIState(Arc<Mutex<Storage>>);
 
 fn log_new(typ: String, map: BTreeMap<String, String>) -> StorageResult<Log> {
     let attrs = map.into_iter().map(|(k, v)| (k, Bson::String(v))).collect::<Document>();
-    let id = STATE.0.lock().unwrap().create_log(&typ, attrs)?;
-    // FIXME optimize this
-    STATE.0.lock().unwrap().get_log(id)
+    STORE.lock().unwrap().create_log(&typ, attrs)
 }
 
 fn log_get(id: i32) -> StorageResult<Log> {
-    STATE.0.lock().unwrap().get_log(id)
+    STORE.lock().unwrap().get_log(id)
 }
 
 fn obj_get(id: i32) -> StorageResult<Object> {
-    STATE.0.lock().unwrap().get_obj(id)
+    STORE.lock().unwrap().get_obj(id)
 }
 
 fn log_set_attr(log: Log, key: &str, val: &str) -> StorageResult<()> {
-    STATE.0.lock().unwrap().log_set_attr(log.id, key, val)
+    STORE.lock().unwrap().log_set_attr(log.id, key, val)
 }
 
 fn obj_new(name: String, typ: String, map: BTreeMap<String, String>) -> StorageResult<Object> {
-    let mut storage = STATE.0.lock().unwrap();
+    let mut storage = STORE.lock().unwrap();
     let id = storage.create_obj(&name, &typ)?;
+    let mut obj = Object {
+        id,
+        name,
+        typ,
+        desc: None,
+        deps: Vec::new(),
+        subs: Vec::new(),
+        refs: Vec::new(),
+        attrs: BTreeMap::new(),
+    };
     if map.contains_key("desc") {
-        storage.obj_set_desc(id, map.get("desc").unwrap())?;
+        let desc = map.get("desc").unwrap();
+        storage.obj_set_desc(id, desc)?;
+        obj.desc = Some(desc.into());
     }
-    // FIXME optimize this
-    STATE.0.lock().unwrap().get_obj(id)
+    Ok(obj)
 }
 
 fn obj_set_desc(obj: Object, desc: &str) -> StorageResult<()> {
-    STATE.0.lock().unwrap().obj_set_desc(obj.id, desc)
+    STORE.lock().unwrap().obj_set_desc(obj.id, desc)
 }
 
 fn obj_add_sub(obj: Object, sub: i32) -> StorageResult<()> {
-    STATE.0.lock().unwrap().obj_add_sub(obj.id, sub)
+    STORE.lock().unwrap().obj_add_sub(obj.id, sub)
 }
 
 fn obj_add_ref(obj: Object, rf: i32) -> StorageResult<()> {
-    STATE.0.lock().unwrap().obj_add_ref(obj.id, rf)
+    STORE.lock().unwrap().obj_add_ref(obj.id, rf)
 }
 
 fn obj_add_dep(obj: Object, dep: i32) -> StorageResult<()> {
-    STATE.0.lock().unwrap().obj_add_dep(obj.id, dep)
+    STORE.lock().unwrap().obj_add_dep(obj.id, dep)
 }
 
 fn obj_set_attr(obj: Object, key: &str, val: &str) -> StorageResult<()> {
-    STATE.0.lock().unwrap().obj_set_attr(obj.id, key, val)
+    STORE.lock().unwrap().obj_set_attr(obj.id, key, val)
 }
 
 fn obj_del_sub(obj: Object, sub: i32) -> StorageResult<()> {
-    STATE.0.lock().unwrap().obj_del_sub(obj.id, sub)
+    STORE.lock().unwrap().obj_del_sub(obj.id, sub)
 }
 
 fn obj_del_ref(obj: Object, rf: i32) -> StorageResult<()> {
-    STATE.0.lock().unwrap().obj_del_ref(obj.id, rf)
+    STORE.lock().unwrap().obj_del_ref(obj.id, rf)
 }
 
 fn obj_del_dep(obj: Object, dep: i32) -> StorageResult<()> {
-    STATE.0.lock().unwrap().obj_del_dep(obj.id, dep)
+    STORE.lock().unwrap().obj_del_dep(obj.id, dep)
 }
 
 fn obj_del_attr(obj: Object, attr: &str) -> StorageResult<()> {
-    STATE.0.lock().unwrap().obj_del_attr(obj.id, attr)
+    STORE.lock().unwrap().obj_del_attr(obj.id, attr)
 }
 
 pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
@@ -106,7 +113,7 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
             },
 
             add_handler => primitive!(2, |pat, func| {
-                STATE.0.lock().unwrap().add_gluon(pat, func)
+                STORE.lock().unwrap().add_gluon(pat, func)
             }),
         },
     )

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use bson::{doc, document::ValueAccessError, from_bson, Document};
+use bson::{doc, document::ValueAccessError, from_bson, Document, Bson};
 use chrono::Utc;
 use mongodb::sync::{Client, Collection};
 
@@ -78,7 +78,7 @@ impl Storage {
         self.handlers.add_gluon(pat, f)
     }
 
-    pub fn create_log(&mut self, typ: &str, attrs: Document) -> Result<i32> {
+    pub fn create_log(&mut self, typ: &str, attrs: Document) -> Result<Log> {
         let id = self
             .ids
             .find_one_and_update(doc! { "_id": "logs_id" }, doc! { "$inc": { "id": 1 } }, None)
@@ -86,24 +86,37 @@ impl Storage {
             .unwrap()
             .get_i32("id")
             .unwrap();
-        // let attrs = attrs.into_iter().map(|(k, v)| (k, Bson::String(v))).collect::<Document>();
+        let time = Utc::now();
         if attrs.len() > 0 {
             self.logs
                 .insert_one(
-                    doc! { "_id": id, "type": typ, "time": Utc::now(), "attrs": attrs },
+                    doc! { "_id": id, "type": typ, "time": time, "attrs": attrs.clone() },
                     None,
                 )
                 .unwrap();
         } else {
             self.logs
-                .insert_one(doc! { "_id": id, "type": typ, "time": Utc::now() }, None)
+                .insert_one(doc! { "_id": id, "type": typ, "time": time }, None)
                 .unwrap();
         }
 
-        // FIXME optimize this
-        let log = self.get_log(id)?;
+        let attrs = attrs.into_iter()
+            .map(|(k, v)| {
+                let s = match v {
+                    Bson::String(s) => s,
+                    _ => panic!("expected string but got: {:?}", v),
+                };
+                (k, s)
+            })
+            .collect();
+        let log = Log {
+            id,
+            typ: typ.to_string(),
+            attrs,
+            time: GluonDateTime(time.into()),
+        };
         self.handlers.handle(&log);
-        Ok(id)
+        Ok(log)
     }
 
     pub fn log_set_attr(&mut self, id: i32, key: &str, val: &str) -> Result<()> {
