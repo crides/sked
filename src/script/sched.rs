@@ -8,7 +8,7 @@ use lazy_static::lazy_static;
 use crate::storage::{Error, Log, Object, Result as StorageResult, Storage};
 
 lazy_static! {
-    pub static ref STORE: Mutex<Storage> = Mutex::new(Storage::new());
+    static ref STORE: Mutex<Storage> = Mutex::new(Storage::new());
 }
 
 fn log_new(typ: String, map: BTreeMap<String, String>) -> StorageResult<Log> {

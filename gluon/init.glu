@@ -3,13 +3,30 @@ let io @ { ? } = import! std.io
 let proc @ { ? } = import! std.process
 let result @ { ? } = import! std.result
 let { log, obj, add_handler } = import! sched
-let time = import! time
+let jobs = import! jobs
+let { time, duration, ? } = import! time
+let { ref, (<-), load } = import! std.reference
+
+let format_urbit t = time.format t "%Y.%m.%d..%H.%M.%S..%Z"
+let format_urbit_millis t = time.format t "%Y.%m.%d..%H.%M.%S..%f"
 
 add_handler "test" (\l ->
     let t = time.to_local l.time
-    let urbit_time = time.format_datetime t "%Y.%m.%d..%H.%M.%S..%Z"
-    seq proc.execute (proc.proc "notify-send" ["Sched", urbit_time])
+    seq proc.execute (proc.proc "notify-send" ["Sched", format_urbit t])
     io.wrap ())
 
 let m = map.singleton "desc" "just a test"
 log.new "test" m
+
+let last_time = ref None
+let stop = time.add (time.local_now ()) (duration.seconds 7)
+jobs.until_now stop (duration.seconds 1) (\c ->
+    let now = time.local_now ()
+    seq io.println ("now: " ++ (format_urbit_millis (time.local_now ())))
+    seq match load last_time with
+    | Some t ->
+        seq io.println ("last: " ++ format_urbit_millis t)
+        io.println ("diff: " ++ (duration.show (time.sub now t)))
+    | None -> io.wrap ()
+    last_time <- Some now
+    io.println "")
