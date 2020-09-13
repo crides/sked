@@ -1,18 +1,18 @@
+pub mod job;
 pub mod sched;
 pub mod time;
-pub mod job;
 
 use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
 
 use gluon::{
     import::{add_extern_module, add_extern_module_with_deps},
-    VmBuilder,
-    Result as GluonResult, RootedThread, ThreadExt,
+    Result as GluonResult, RootedThread, ThreadExt, VmBuilder,
 };
 
 pub fn get_vm(config_dir: PathBuf) -> RootedThread {
     let vm = VmBuilder::new().import_paths(Some(vec![config_dir])).build();
+    vm.get_database_mut().set_optimize(false);
     vm.run_io(true);
     add_extern_module(&vm, "time.prim", time::load);
     add_extern_module_with_deps(&vm, "sched", sched::load, vec!["std.map".into(), "time.prim".into()]);

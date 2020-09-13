@@ -1,7 +1,13 @@
 use std::sync::Mutex;
 
-use chrono::{NaiveDateTime, DateTime, Utc, Duration, Offset};
-use gluon::{vm::{ExternModule, api::{OwnedFunction, IO}}, Thread};
+use chrono::{DateTime, Duration, NaiveDateTime, Offset, Utc};
+use gluon::{
+    vm::{
+        api::{OwnedFunction, IO},
+        ExternModule,
+    },
+    Thread,
+};
 use lazy_static::lazy_static;
 
 use crate::script::time::{DateTime as GluonDateTime, Duration as GluonDuration};
@@ -37,58 +43,71 @@ lazy_static! {
 
 pub fn run() {
     let mut jobs = JOBS.lock().unwrap();
-    *jobs = jobs.drain(..).filter_map(|j| {
-        let now = Utc::now().naive_utc();
-        let next = match j {
-            Job::Counted { start, .. } | Job::Until { start, .. } | Job::Custom { start, .. } => start,
-        };
-        if next > now {
-            return Some(j);
-        }
-        match j {
-            Job::Counted { interval, count, mut job, .. } => {
-                let count = count - 1;
-                job.call(count).unwrap();
-                if count > 0 {
-                    Some(Job::Counted {
-                        start: next + interval,
-                        interval,
-                        count,
-                        job,
-                    })
-                } else {
-                    None
+    *jobs = jobs
+        .drain(..)
+        .filter_map(|j| {
+            let now = Utc::now().naive_utc();
+            let next = match j {
+                Job::Counted { start, .. } | Job::Until { start, .. } | Job::Custom { start, .. } => start,
+            };
+            if next > now {
+                return Some(j);
+            }
+            match j {
+                Job::Counted {
+                    interval,
+                    count,
+                    mut job,
+                    ..
+                } => {
+                    let count = count - 1;
+                    job.call(count).unwrap();
+                    if count > 0 {
+                        Some(Job::Counted {
+                            start: next + interval,
+                            interval,
+                            count,
+                            job,
+                        })
+                    } else {
+                        None
+                    }
                 }
-            },
-            Job::Until { start, interval, stop, mut job } => {
-                let next = start + interval;
-                job.call(GluonDateTime(DateTime::from_utc(now, Utc.fix()))).unwrap();
-                if next < stop {
-                    Some(Job::Until {
-                        start: next,
-                        interval,
-                        stop,
-                        job,
-                    })
-                } else {
-                    None
+                Job::Until {
+                    start,
+                    interval,
+                    stop,
+                    mut job,
+                } => {
+                    let next = start + interval;
+                    job.call(GluonDateTime(DateTime::from_utc(now, Utc.fix()))).unwrap();
+                    if next < stop {
+                        Some(Job::Until {
+                            start: next,
+                            interval,
+                            stop,
+                            job,
+                        })
+                    } else {
+                        None
+                    }
                 }
-            },
-            Job::Custom { mut next, mut job, .. } => {
-                let now = GluonDateTime(DateTime::from_utc(now, Utc.fix()));
-                job.call(now).unwrap();
-                if let Some(time) = next.call(now).unwrap() {
-                    Some(Job::Custom {
-                        start: time.0.naive_utc(),
-                        next,
-                        job,
-                    })
-                } else {
-                    None
+                Job::Custom { mut next, mut job, .. } => {
+                    let now = GluonDateTime(DateTime::from_utc(now, Utc.fix()));
+                    job.call(now).unwrap();
+                    if let Some(time) = next.call(now).unwrap() {
+                        Some(Job::Custom {
+                            start: time.0.naive_utc(),
+                            next,
+                            job,
+                        })
+                    } else {
+                        None
+                    }
                 }
-            },
-        }
-    }).collect();
+            }
+        })
+        .collect();
 }
 
 fn counted_at(time: GluonDateTime, interval: GluonDuration, count: u32, job: CountedFunc) {

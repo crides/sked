@@ -1,16 +1,22 @@
 use std::collections::BTreeMap;
 
-use bson::{doc, document::ValueAccessError, from_bson, Document, Bson};
+use bson::{doc, document::ValueAccessError, Bson, Document};
 use chrono::Utc;
 use mongodb::sync::{Client, Collection};
 
-use crate::signal::{SignalHandlers, SignalHandler};
 use crate::script::time::DateTime as GluonDateTime;
+use crate::signal::{SignalHandler, SignalHandlers};
 
-#[derive(Clone, Debug, Trace, VmType, Userdata, Serialize, Deserialize)]
+#[derive(Clone, Debug, Trace, VmType, Pushable, Getable)]
 #[gluon_trace(skip)]
-#[gluon_userdata(clone)]
-#[gluon(vm_type = "sched.Error")]
+pub enum AttrValue {
+    Int(i64),
+    Float(f64),
+    String(String),
+}
+
+#[derive(Clone, Debug, Trace, VmType, Pushable, Getable)]
+#[gluon_trace(skip)]
 pub enum Error {
     Regex(String),
     InvalidKey(String),
@@ -19,6 +25,7 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+pub type Attr = BTreeMap<String, AttrValue>;
 
 #[derive(Clone, Debug, Trace, VmType, Pushable, Getable)]
 #[gluon_trace(skip)]
@@ -26,26 +33,20 @@ pub struct Log {
     pub id: i32,
     pub typ: String,
     pub time: GluonDateTime,
-    pub attrs: BTreeMap<String, String>,
+    pub attrs: Attr,
 }
 
-#[derive(Clone, Debug, Trace, VmType, Deserialize, Pushable, Getable)]
+#[derive(Clone, Debug, Trace, VmType, Pushable, Getable)]
 #[gluon_trace(skip)]
 pub struct Object {
-    #[serde(rename(deserialize = "_id"))]
     pub id: i32,
     pub name: String,
-    #[serde(rename(deserialize = "type"))]
     pub typ: String,
     pub desc: Option<String>,
-    #[serde(default)]
     pub deps: Vec<i32>,
-    #[serde(default)]
     pub subs: Vec<i32>,
-    #[serde(default)]
     pub refs: Vec<i32>,
-    #[serde(default)]
-    pub attrs: BTreeMap<String, String>,
+    pub attrs: Attr,
 }
 
 pub struct Storage {
@@ -53,6 +54,35 @@ pub struct Storage {
     logs: Collection,
     objs: Collection,
     handlers: SignalHandlers,
+}
+
+pub fn attr_to_bson(v: AttrValue) -> Bson {
+    match v {
+        AttrValue::Int(i) => Bson::Int64(i),
+        AttrValue::Float(f) => Bson::Double(f),
+        AttrValue::String(s) => Bson::String(s),
+    }
+}
+
+pub fn doc_to_attr(d: Document) -> Attr {
+    d.into_iter()
+        .map(|(k, v)| {
+            (
+                k,
+                match v {
+                    Bson::String(s) => AttrValue::String(s),
+                    Bson::Double(f) => AttrValue::Float(f),
+                    Bson::Int64(i) => AttrValue::Int(i),
+                    Bson::Int32(i) => AttrValue::Int(i as i64),
+                    _ => panic!("expected string but got: {:?}", v),
+                },
+            )
+        })
+        .collect()
+}
+
+pub fn attr_to_doc(a: Attr) -> Document {
+    a.into_iter().map(|(k, v)| (k, attr_to_bson(v))).collect()
 }
 
 impl Storage {
@@ -100,15 +130,38 @@ impl Storage {
                 .unwrap();
         }
 
-        let attrs = attrs.into_iter()
-            .map(|(k, v)| {
-                let s = match v {
-                    Bson::String(s) => s,
-                    _ => panic!("expected string but got: {:?}", v),
-                };
-                (k, s)
-            })
-            .collect();
+        let log = Log {
+            id,
+            typ: typ.to_string(),
+            attrs: doc_to_attr(attrs),
+            time: GluonDateTime(time.into()),
+        };
+        self.handlers.handle(&log);
+        Ok(log)
+    }
+
+    pub fn create_log_attrs(&mut self, typ: &str, attrs: Attr) -> Result<Log> {
+        let id = self
+            .ids
+            .find_one_and_update(doc! { "_id": "logs_id" }, doc! { "$inc": { "id": 1 } }, None)
+            .unwrap()
+            .unwrap()
+            .get_i32("id")
+            .unwrap();
+        let time = Utc::now();
+        if attrs.len() > 0 {
+            self.logs
+                .insert_one(
+                    doc! { "_id": id, "type": typ, "time": time, "attrs": attr_to_doc(attrs.clone()) },
+                    None,
+                )
+                .unwrap();
+        } else {
+            self.logs
+                .insert_one(doc! { "_id": id, "type": typ, "time": time }, None)
+                .unwrap();
+        }
+
         let log = Log {
             id,
             typ: typ.to_string(),
@@ -119,7 +172,7 @@ impl Storage {
         Ok(log)
     }
 
-    pub fn log_set_attr(&mut self, id: i32, key: &str, val: &str) -> Result<()> {
+    pub fn log_set_attr(&mut self, id: i32, key: &str, val: AttrValue) -> Result<()> {
         if key.contains('.') {
             return Err(Error::InvalidKey(key.to_string()));
         }
@@ -127,7 +180,7 @@ impl Storage {
         self.logs
             .find_one_and_update(
                 doc! { "_id": id, key.clone(): { "$exists": false } },
-                doc! { "$set": { key.clone(): val } },
+                doc! { "$set": { key.clone(): attr_to_bson(val) } },
                 None,
             )
             .unwrap();
@@ -136,26 +189,25 @@ impl Storage {
     }
 
     pub fn get_log(&mut self, id: i32) -> Result<Log> {
-        let log = self
+        let mut log = self
             .logs
             .find_one(doc! { "_id": id }, None)
             .unwrap()
             .ok_or_else(|| Error::InvalidLogID(id))?;
-        // FIXME The deser impl in `Bson` is missing for `Datetime<>`.
-        // Github issue: https://github.com/mongodb/bson-rust/issues/191, and
-        // tracking Jira in MongoDB: https://jira.mongodb.org/browse/RUST-506
         Ok(Log {
             id,
-            typ: log.get_str("type").unwrap().into(),
-            time: GluonDateTime(log.get_datetime("time").unwrap().clone().into()),
-            attrs: log
-                .get_document("attrs")
-                .map(|d| {
-                    d.into_iter()
-                        .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            typ: match log.remove("type").unwrap() {
+                Bson::String(s) => s,
+                _ => panic!("Expected string for type!"),
+            },
+            time: match log.remove("time").unwrap() {
+                Bson::DateTime(t) => GluonDateTime(t.into()),
+                _ => panic!("Expected DateTime for time!"),
+            },
+            attrs: match log.remove("attrs") {
+                Some(Bson::Document(d)) => doc_to_attr(d),
+                _ => Attr::default(),
+            },
         })
     }
 
@@ -217,24 +269,25 @@ impl Storage {
         Ok(())
     }
 
-    pub fn obj_set_attr(&mut self, id: i32, key: &str, val: &str) -> Result<()> {
+    pub fn obj_set_attr(&mut self, id: i32, key: &str, val: AttrValue) -> Result<()> {
         if key.contains('.') {
             return Err(Error::InvalidKey(key.to_string()));
         }
+        let val = attr_to_bson(val);
         let old_obj = self
             .objs
             .find_one_and_update(
                 doc! { "_id": id },
-                doc! { "$set": { format!("attrs.{}", key): val } },
+                doc! { "$set": { format!("attrs.{}", key): val.clone() } },
                 None,
             )
             .unwrap()
             .unwrap();
-        let attrs = match old_obj.get_document("attrs").map(|d| d.get_str(key).unwrap()) {
-            Ok(old) => {
+        let attrs = match old_obj.get_document("attrs").map(|d| d.get_str(key)) {
+            Ok(Ok(old)) => {
                 doc! { "key": key, "id": id, "old": old, "new": val }
             }
-            Err(ValueAccessError::NotPresent) => {
+            Err(ValueAccessError::NotPresent) | Ok(Err(ValueAccessError::NotPresent)) => {
                 doc! { "key": key, "id": id, "new": val }
             }
             _ => unreachable!(),
@@ -290,11 +343,43 @@ impl Storage {
     }
 
     pub fn get_obj(&mut self, id: i32) -> Result<Object> {
-        let obj = self
+        let mut obj = self
             .objs
             .find_one(doc! { "_id": id }, None)
             .unwrap()
             .ok_or_else(|| Error::InvalidObjID(id))?;
-        Ok(from_bson(obj.into()).unwrap())
+        // This mess is here because implementing `Deserialize` for Attr is complicated, and it's also only
+        // used once
+        Ok(Object {
+            id,
+            name: match obj.remove("name").unwrap() {
+                Bson::String(s) => s,
+                _ => panic!("Expected string for name!"),
+            },
+            typ: match obj.remove("type").unwrap() {
+                Bson::String(s) => s,
+                _ => panic!("Expected string for type!"),
+            },
+            desc: obj.remove("desc").map(|d| match d {
+                Bson::String(d) => d,
+                _ => panic!("Expected string for desc!"),
+            }),
+            deps: match obj.remove("deps") {
+                Some(Bson::Array(a)) => a.into_iter().map(|d| d.as_i32().unwrap()).collect(),
+                _ => Vec::new(),
+            },
+            refs: match obj.remove("refs") {
+                Some(Bson::Array(a)) => a.into_iter().map(|d| d.as_i32().unwrap()).collect(),
+                _ => Vec::new(),
+            },
+            subs: match obj.remove("subs") {
+                Some(Bson::Array(a)) => a.into_iter().map(|d| d.as_i32().unwrap()).collect(),
+                _ => Vec::new(),
+            },
+            attrs: match obj.remove("attrs") {
+                Some(Bson::Document(d)) => doc_to_attr(d),
+                _ => Attr::default(),
+            },
+        })
     }
 }

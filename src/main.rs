@@ -5,9 +5,9 @@ extern crate gluon;
 #[macro_use]
 extern crate serde_derive;
 
-mod signal;
 mod repl;
 mod script;
+mod signal;
 mod storage;
 
 use std::fs;

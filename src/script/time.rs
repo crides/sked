@@ -1,5 +1,8 @@
 use chrono::{FixedOffset, Local, Offset, Utc};
-use gluon::{vm::{ExternModule, api::Getable, Result as GluonResult, Variants}, Thread};
+use gluon::{
+    vm::{api::Getable, ExternModule, Result as GluonResult, Variants},
+    Thread,
+};
 use gluon_codegen::*;
 
 #[derive(Clone, Copy, Debug, Userdata, Trace, VmType)]

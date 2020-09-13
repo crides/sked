@@ -1,19 +1,17 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use bson::{Bson, Document};
 use gluon::{vm::ExternModule, Thread};
 use lazy_static::lazy_static;
 
-use crate::storage::{Error, Log, Object, Result as StorageResult, Storage};
+use crate::storage::{Attr, AttrValue, Error, Log, Object, Result as StorageResult, Storage};
 
 lazy_static! {
     static ref STORE: Mutex<Storage> = Mutex::new(Storage::new());
 }
 
-fn log_new(typ: String, map: BTreeMap<String, String>) -> StorageResult<Log> {
-    let attrs = map.into_iter().map(|(k, v)| (k, Bson::String(v))).collect::<Document>();
-    STORE.lock().unwrap().create_log(&typ, attrs)
+fn log_new(typ: String, attrs: Attr) -> StorageResult<Log> {
+    STORE.lock().unwrap().create_log_attrs(&typ, attrs)
 }
 
 fn log_get(id: i32) -> StorageResult<Log> {
@@ -24,7 +22,7 @@ fn obj_get(id: i32) -> StorageResult<Object> {
     STORE.lock().unwrap().get_obj(id)
 }
 
-fn log_set_attr(log: Log, key: &str, val: &str) -> StorageResult<()> {
+fn log_set_attr(log: Log, key: &str, val: AttrValue) -> StorageResult<()> {
     STORE.lock().unwrap().log_set_attr(log.id, key, val)
 }
 
@@ -65,7 +63,7 @@ fn obj_add_dep(obj: Object, dep: i32) -> StorageResult<()> {
     STORE.lock().unwrap().obj_add_dep(obj.id, dep)
 }
 
-fn obj_set_attr(obj: Object, key: &str, val: &str) -> StorageResult<()> {
+fn obj_set_attr(obj: Object, key: &str, val: AttrValue) -> StorageResult<()> {
     STORE.lock().unwrap().obj_set_attr(obj.id, key, val)
 }
 
@@ -86,10 +84,12 @@ fn obj_del_attr(obj: Object, attr: &str) -> StorageResult<()> {
 }
 
 pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
-    thread.register_type::<Error>("sched.Error", &[])?;
+    thread.register_type::<AttrValue>("sched.AttrValue", &[])?;
     ExternModule::new(
         thread,
         record! {
+            type Error => Error,
+            type AttrValue => AttrValue,
             log => record! {
                 type Log => Log,
                 new => primitive!(2, log_new),
