@@ -35,13 +35,17 @@ async fn main() {
             delay_for(Duration::from_millis(200)).await;
         }
     });
+    let cmd_repl = async { script::cmd::cmd_repl() };
 
     select! {
         _ = job_task => (),
-        res = repl::run(&vm, "> ") => {
-            if let Err(e) = res {
-                println!("{}", e);
+        r = cmd_repl => {
+            if r {
+                let res = repl::run(&vm, "> ").await;
+                if let Err(e) = res {
+                    println!("{}", e);
+                }
             }
-        }
+        },
     }
 }
