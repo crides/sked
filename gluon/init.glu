@@ -1,32 +1,39 @@
-let map @ { ? } = import! std.map
+let map @ { Map, ? } = import! std.map
+let array @ { Array, ? } = import! std.array
 let io @ { ? } = import! std.io
 let proc @ { ? } = import! std.process
 let result @ { ? } = import! std.result
-let { log, obj, add_handler } = import! sched
+let sched @ { AttrValue } = import! sched
 let jobs = import! jobs
 let { time, duration, ? } = import! time
 let { ref, (<-), load } = import! std.reference
+let { (<|), (|>) } = import! std.function
+let cmd = import! cmd
+let { unwrap } = import! std.option
+let { foldl } = import! std.foldable
 
-let format_urbit t = time.format t "%Y.%m.%d..%H.%M.%S..%Z"
-let format_urbit_millis t = time.format t "%Y.%m.%d..%H.%M.%S..%f"
+let arr_to_map a : Array String -> Map String String =
+    (foldl (\mk x ->
+            let { m, k } = mk
+            match k with
+            | Some key -> { m = map.insert key x m, k = None }
+            | None -> { m, k = Some x })
+        { m = map.empty, k = None } a).m
 
-add_handler "test" (\l ->
-    let t = time.to_local l.time
-    seq proc.execute (proc.proc "notify-send" ["Sched", format_urbit t])
-    io.wrap ())
-
-let m = map.singleton "desc" "just a test"
-log.new "test" m
-
-let last_time = ref None
-let stop = time.add (time.local_now ()) (duration.seconds 7)
-jobs.until_now stop (duration.seconds 1) (\c ->
-    let now = time.local_now ()
-    seq io.println ("now: " ++ (format_urbit_millis (time.local_now ())))
-    seq match load last_time with
-    | Some t ->
-        seq io.println ("last: " ++ format_urbit_millis t)
-        io.println ("diff: " ++ (duration.show (time.sub now t)))
-    | None -> io.wrap ()
-    last_time <- Some now
-    io.println "")
+cmd.add_command "new-log"
+    "<name>     'Name for the log'
+     <type>     'Type for the log'
+     -d --desc=[desc]   	  'Optional description. Equivalent to --arg desc ...'
+     -a --attr [key] [val]... 'Optional attributes'"
+    (\m -> 
+        let name = unwrap <| cmd.value_of m "name"
+        let typ = unwrap <| cmd.value_of m "type"
+        let key = ref None
+        let attrs = arr_to_map <| cmd.values_of m "attr"
+        let attrs =
+            match cmd.value_of m "desc" with
+            | Some d -> map.insert "desc" d attrs
+            | None -> attrs
+        seq io.println ("name: " ++ name)
+        seq io.println ("type: " ++ typ)
+        io.println <| "attrs: " ++ (show attrs))
