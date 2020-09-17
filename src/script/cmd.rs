@@ -3,6 +3,7 @@ use std::iter;
 use std::sync::Mutex;
 
 use clap::App;
+use dirs::data_dir;
 use gluon::{
     vm::{
         api::{OwnedFunction, IO},
@@ -36,12 +37,18 @@ fn add_command(name: String, usage: String, handler: CommandHandler) {
 
 pub fn cmd_repl() -> bool {
     let mut editor = Editor::<()>::new();
-    loop {
+    if let Some(d) = data_dir() {
+        let _ = editor.load_history(&d.join("sched/history"));
+    }
+    let ret = loop {
         match editor.readline(">=> ") {
             Ok(line) => {
                 let line = line.trim();
+                if !line.is_empty() {
+                    editor.add_history_entry(line);
+                }
                 if line == "repl" {
-                    return true;
+                    break true;
                 }
                 let args = line.split_ascii_whitespace();
                 CMDS.with(|c| {
@@ -54,28 +61,33 @@ pub fn cmd_repl() -> bool {
                     {
                         Ok(matches) => {
                             let (name, submatches) = matches.subcommand();
-                            let _ = cmds
-                                .1
-                                .get_mut(name)
-                                .unwrap()
-                                .call(ArgMatches(submatches.unwrap().clone()));
+                            if name.len() != 0 {
+                                let _ = cmds
+                                    .1
+                                    .get_mut(name)
+                                    .unwrap()
+                                    .call(ArgMatches(submatches.unwrap().clone()));
+                            }
                         }
                         Err(e) => {
                             eprintln!("{}", e.message);
-                            eprintln!("kind: {:?}, extra: {:?}", e.kind, e.info);
                         }
                     }
                 });
             }
             Err(ReadlineError::Eof) => {
-                return false;
+                break false;
             }
             Err(e) => {
                 eprintln!("{:?}", e);
-                return false;
+                break false;
             }
         }
+    };
+    if let Some(d) = data_dir() {
+        editor.save_history(&d.join("sched/history")).unwrap();
     }
+    ret
 }
 
 fn value_of<'a>(m: &'a ArgMatches, name: &str) -> Option<&'a str> {
@@ -92,7 +104,6 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
         thread,
         record! {
             add_command => primitive!(3, add_command),
-            // cmd_repl => primitive!(1, cmd_repl),
             value_of => primitive!(2, value_of),
             values_of => primitive!(2, values_of),
         },
