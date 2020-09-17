@@ -9,6 +9,8 @@ mod repl;
 mod script;
 mod signal;
 mod storage;
+mod task;
+mod util;
 
 use std::fs;
 use std::time::Duration;

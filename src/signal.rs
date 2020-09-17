@@ -1,7 +1,8 @@
 use gluon::vm::api::{OwnedFunction, IO};
 use regex::Regex;
 
-use crate::storage::{Error, Log, Result};
+use crate::storage::{Error, Result};
+use crate::script::sched::Log;
 
 pub type SignalHandler = OwnedFunction<fn(Log) -> IO<()>>;
 

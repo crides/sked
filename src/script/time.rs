@@ -1,4 +1,7 @@
-use chrono::{FixedOffset, Local, Offset, Utc};
+use std::fmt;
+
+use chrono::{FixedOffset, Local, Offset, Utc, Timelike};
+use serde::{Serialize, Deserialize, Serializer, Deserializer, ser::SerializeMap, de::{self, Visitor, MapAccess}};
 use gluon::{
     vm::{api::Getable, ExternModule, Result as GluonResult, Variants},
     Thread,
@@ -24,6 +27,127 @@ impl<'vm, 'value> Getable<'vm, 'value> for DateTime {
     }
 }
 
+impl Serialize for DateTime {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: Serializer {
+        let mut map = serializer.serialize_map(Some(1))?;
+        map.serialize_entry("$date", &self.0.to_rfc3339())?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for DateTime {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        enum Field {
+            #[serde(rename = "$date")]
+            Date,
+        };
+
+        struct DateTimeVisitor;
+
+        impl<'de> Visitor<'de> for DateTimeVisitor {
+            type Value = DateTime;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("struct DateTime")
+            }
+
+            fn visit_map<V: MapAccess<'de>>(self, mut map: V) -> Result<DateTime, V::Error> {
+                let mut date = None;
+                while let Some(Field::Date) = map.next_key()? {
+                    if date.is_some() {
+                        return Err(de::Error::duplicate_field("$date"));
+                    }
+                    let s: String = map.next_value()?;
+                    date = Some(DateTime(chrono::DateTime::<chrono::FixedOffset>::parse_from_rfc3339(&s).unwrap()))
+                }
+                date.ok_or_else(|| de::Error::missing_field("$date"))
+            }
+        }
+
+        deserializer.deserialize_map(DateTimeVisitor)
+    }
+}
+
+impl From<chrono::DateTime<Utc>> for DateTime {
+    fn from(t: chrono::DateTime<Utc>) -> DateTime {
+        DateTime(t.into())
+    }
+}
+
+impl DateTime {
+    pub fn to_utc(self) -> chrono::DateTime<Utc> {
+        self.0.into()
+    }
+
+    fn format(&self, format: &str) -> String {
+        self.0.format(format).to_string()
+    }
+
+    fn with_timezone(&self, tz: &TimeZone) -> DateTime {
+        DateTime(self.0.with_timezone(&tz.0))
+    }
+
+    fn to_local(&self) -> DateTime {
+        DateTime(self.0.with_timezone(Local::now().offset()))
+    }
+
+    fn local_now(_: ()) -> DateTime {
+        let now = Local::now();
+        DateTime(now.with_timezone(now.offset()))
+    }
+
+    fn utc_now(_: ()) -> DateTime {
+        Utc::now().into()
+    }
+
+    fn sub(&self, b: &DateTime) -> Duration {
+        Duration(self.0 - b.0)
+    }
+
+    fn add(&self, b: &Duration) -> DateTime {
+        DateTime(self.0 + b.0)
+    }
+
+    fn eq(&self, b: &DateTime) -> bool {
+        self.0 == b.0
+    }
+
+    fn lt(&self, b: &DateTime) -> bool {
+        self.0 < b.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Userdata, Trace, VmType)]
+#[gluon_userdata(clone)]
+#[gluon(vm_type = "time.Time")]
+#[gluon_trace(skip)]
+pub struct Time(chrono::NaiveTime);
+
+impl<'vm, 'value> Getable<'vm, 'value> for Time {
+    type Proxy = Variants<'value>;
+    fn to_proxy(_vm: &'vm Thread, value: Variants<'value>) -> GluonResult<Self::Proxy> {
+        Ok(value)
+    }
+    fn from_proxy(vm: &'vm Thread, proxy: &'value mut Self::Proxy) -> Self {
+        <Self as Getable<'vm, 'value>>::from_value(vm, proxy.clone())
+    }
+    fn from_value(vm: &'vm Thread, value: Variants<'value>) -> Self {
+        *<&'value Time as Getable<'vm, 'value>>::from_value(vm, value)
+    }
+}
+
+impl Time {
+    pub fn to_secs(self) -> u32 {
+        self.0.num_seconds_from_midnight()
+    }
+
+    pub fn from_secs(secs: u32) -> Self {
+        Time(chrono::NaiveTime::from_num_seconds_from_midnight(secs, 0))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Userdata, Trace, VmType)]
 #[gluon_userdata(clone)]
 #[gluon(vm_type = "time.Duration")]
@@ -43,98 +167,71 @@ impl<'vm, 'value> Getable<'vm, 'value> for Duration {
     }
 }
 
+impl Duration {
+    fn millis(s: i64) -> Duration {
+        Duration(chrono::Duration::milliseconds(s))
+    }
+
+    pub fn seconds(s: i64) -> Duration {
+        Duration(chrono::Duration::seconds(s))
+    }
+
+    fn minutes(s: i64) -> Duration {
+        Duration(chrono::Duration::minutes(s))
+    }
+
+    fn hours(s: i64) -> Duration {
+        Duration(chrono::Duration::hours(s))
+    }
+
+    fn days(s: i64) -> Duration {
+        Duration(chrono::Duration::days(s))
+    }
+
+    fn weeks(s: i64) -> Duration {
+        Duration(chrono::Duration::weeks(s))
+    }
+
+    fn eq(&self, b: &Duration) -> bool {
+        self.0 == b.0
+    }
+
+    fn lt(&self, b: &Duration) -> bool {
+        self.0 < b.0
+    }
+
+    pub fn to_parts(&self) -> (i64, i32) {
+        let d = self.0;
+        let secs = d.num_seconds();
+        let nano_secs = (d - chrono::Duration::seconds(secs)).num_nanoseconds().unwrap() as i32;
+        (secs, nano_secs)
+    }
+
+    fn show(&self) -> String {
+        let (secs, nano_secs) = self.to_parts();
+        format!("Duration({}.{:09})", secs, nano_secs)
+    }
+}
+
 #[derive(Clone, Debug, Userdata, Trace, VmType)]
 #[gluon_userdata(clone)]
 #[gluon(vm_type = "time.TimeZone")]
 #[gluon_trace(skip)]
 pub struct TimeZone(pub chrono::FixedOffset);
 
-fn format(time: &DateTime, format: &str) -> String {
-    format!("{}", time.0.format(format))
-}
+impl TimeZone {
+    fn east(secs: i32) -> TimeZone {
+        TimeZone(FixedOffset::east(secs))
+    }
 
-fn with_timezone(time: &DateTime, tz: &TimeZone) -> DateTime {
-    DateTime(time.0.with_timezone(&tz.0))
-}
-
-fn tz_east(secs: i32) -> TimeZone {
-    TimeZone(FixedOffset::east(secs))
-}
-
-fn tz_west(secs: i32) -> TimeZone {
-    TimeZone(FixedOffset::west(secs))
-}
-
-fn to_local(time: &DateTime) -> DateTime {
-    DateTime(time.0.with_timezone(Local::now().offset()))
-}
-
-fn local_now(_: ()) -> DateTime {
-    let now = Local::now();
-    DateTime(now.with_timezone(now.offset()))
-}
-
-fn utc_now(_: ()) -> DateTime {
-    DateTime(Utc::now().into())
-}
-
-fn time_sub(a: &DateTime, b: &DateTime) -> Duration {
-    Duration(a.0 - b.0)
-}
-
-fn time_add(a: &DateTime, b: &Duration) -> DateTime {
-    DateTime(a.0 + b.0)
-}
-
-fn time_eq(a: &DateTime, b: &DateTime) -> bool {
-    a.0 == b.0
-}
-
-fn time_lt(a: &DateTime, b: &DateTime) -> bool {
-    a.0 < b.0
-}
-
-fn duration_millis(s: i64) -> Duration {
-    Duration(chrono::Duration::milliseconds(s))
-}
-
-fn duration_seconds(s: i64) -> Duration {
-    Duration(chrono::Duration::seconds(s))
-}
-
-fn duration_minutes(s: i64) -> Duration {
-    Duration(chrono::Duration::minutes(s))
-}
-
-fn duration_hours(s: i64) -> Duration {
-    Duration(chrono::Duration::hours(s))
-}
-
-fn duration_days(s: i64) -> Duration {
-    Duration(chrono::Duration::days(s))
-}
-
-fn duration_weeks(s: i64) -> Duration {
-    Duration(chrono::Duration::weeks(s))
-}
-
-fn duration_eq(a: &Duration, b: &Duration) -> bool {
-    a.0 == b.0
-}
-
-fn duration_lt(a: &Duration, b: &Duration) -> bool {
-    a.0 < b.0
-}
-
-fn show_duration(d: &Duration) -> String {
-    let d = d.0;
-    let secs = d.num_seconds();
-    let nano_secs = (d - chrono::Duration::seconds(secs)).num_nanoseconds().unwrap();
-    format!("Duration({}.{:09})", secs, nano_secs)
+    fn west(secs: i32) -> TimeZone {
+        TimeZone(FixedOffset::west(secs))
+    }
 }
 
 pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
     thread.register_type::<DateTime>("time.DateTime", &[])?;
+    thread.register_type::<Time>("time.Time", &[])?;
     thread.register_type::<Duration>("time.Duration", &[])?;
     thread.register_type::<TimeZone>("time.TimeZone", &[])?;
     ExternModule::new(
@@ -144,32 +241,32 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
                 type TimeZone => TimeZone,
                 Utc => TimeZone(Utc.fix()),
                 Local => TimeZone(*Local::now().offset()),
-                east => primitive!(1, tz_east),
-                west => primitive!(1, tz_west),
+                east => primitive!(1, TimeZone::east),
+                west => primitive!(1, TimeZone::west),
             },
             time => record! {
                 type DateTime => DateTime,
-                format => primitive!(2, format),
-                with_timezone => primitive!(2, with_timezone),
-                to_local => primitive!(1, to_local),
-                local_now => primitive!(1, local_now),
-                utc_now => primitive!(1, utc_now),
-                sub => primitive!(2, time_sub),
-                add => primitive!(2, time_add),
-                eq => primitive!(2, time_eq),
-                lt => primitive!(2, time_lt),
+                format => primitive!(2, DateTime::format),
+                with_timezone => primitive!(2, DateTime::with_timezone),
+                to_local => primitive!(1, DateTime::to_local),
+                local_now => primitive!(1, DateTime::local_now),
+                utc_now => primitive!(1, DateTime::utc_now),
+                sub => primitive!(2, DateTime::sub),
+                add => primitive!(2, DateTime::add),
+                eq => primitive!(2, DateTime::eq),
+                lt => primitive!(2, DateTime::lt),
             },
             duration => record! {
                 type Duration => Duration,
-                millis => primitive!(1, duration_millis),
-                seconds => primitive!(1, duration_seconds),
-                minutes => primitive!(1, duration_minutes),
-                hours => primitive!(1, duration_hours),
-                days => primitive!(1, duration_days),
-                weeks => primitive!(1, duration_weeks),
-                eq => primitive!(2, duration_eq),
-                lt => primitive!(2, duration_lt),
-                show => primitive!(1, show_duration),
+                millis => primitive!(1, Duration::millis),
+                seconds => primitive!(1, Duration::seconds),
+                minutes => primitive!(1, Duration::minutes),
+                hours => primitive!(1, Duration::hours),
+                days => primitive!(1, Duration::days),
+                weeks => primitive!(1, Duration::weeks),
+                eq => primitive!(2, Duration::eq),
+                lt => primitive!(2, Duration::lt),
+                show => primitive!(1, Duration::show),
             },
         },
     )
