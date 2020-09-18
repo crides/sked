@@ -11,6 +11,7 @@ use gluon::{
 use lazy_static::lazy_static;
 
 use crate::script::time::{DateTime as GluonDateTime, Duration as GluonDuration};
+use crate::util::print_gluon_err;
 
 type TimedFunc = OwnedFunction<fn(GluonDateTime) -> IO<()>>;
 type CountedFunc = OwnedFunction<fn(u32) -> IO<()>>;
@@ -61,7 +62,10 @@ pub fn run() {
                     ..
                 } => {
                     let count = count - 1;
-                    job.call(count).unwrap();
+                    if let Err(e) = job.call(count) {
+                        eprintln!("Error running job handler:");
+                        print_gluon_err(e.into());
+                    }
                     if count > 0 {
                         Some(Job::Counted {
                             start: next + interval,
@@ -80,7 +84,10 @@ pub fn run() {
                     mut job,
                 } => {
                     let next = start + interval;
-                    job.call(GluonDateTime(DateTime::from_utc(now, Utc.fix()))).unwrap();
+                    if let Err(e) = job.call(GluonDateTime(DateTime::from_utc(now, Utc.fix()))) {
+                        eprintln!("Error running job handler:");
+                        print_gluon_err(e.into());
+                    }
                     if next < stop {
                         Some(Job::Until {
                             start: next,
@@ -94,7 +101,10 @@ pub fn run() {
                 }
                 Job::Custom { mut next, mut job, .. } => {
                     let now = GluonDateTime(DateTime::from_utc(now, Utc.fix()));
-                    job.call(now).unwrap();
+                    if let Err(e) = job.call(now) {
+                        eprintln!("Error running job handler:");
+                        print_gluon_err(e.into());
+                    }
                     if let Some(time) = next.call(now).unwrap() {
                         Some(Job::Custom {
                             start: time.0.naive_utc(),

@@ -1,10 +1,10 @@
-use bson::{doc, Bson, from_bson};
+use bson::{doc, from_bson, Bson};
 
 use crate::script::{
+    task::{Event, Every, Stop, Task},
     time::{DateTime, Duration, Time},
-    task::{Task, Event, Every, Stop},
 };
-use crate::storage::{Result, Storage, Error};
+use crate::storage::{Error, Result, Storage};
 
 impl Storage {
     pub fn create_task(
@@ -30,7 +30,7 @@ impl Storage {
             .unwrap()
             .ok_or_else(|| Error::InvalidObjID(id))?;
         if task.get_str("type") != Ok("task") {
-            return Err(Error::ObjTypeNotTask(id));
+            return Err(Error::ObjNotTask(id));
         }
         let start = task.get_datetime("start").unwrap().clone().into();
         let every = Every::from_doc(task.get_document("every").unwrap().clone());
@@ -70,7 +70,7 @@ impl Storage {
             .unwrap()
             .ok_or_else(|| Error::InvalidObjID(id))?;
         if task.get_str("type") != Ok("event") {
-            return Err(Error::ObjTypeNotEvent(id));
+            return Err(Error::ObjNotEvent(id));
         }
         let start = task.get_datetime("start").unwrap().clone().into();
         let every = Every::from_doc(task.get_document("every").unwrap().clone());

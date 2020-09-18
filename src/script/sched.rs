@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
+use bson::to_document;
 use gluon::{vm::ExternModule, Thread};
 use lazy_static::lazy_static;
 
-use crate::storage::{Error, Result as StorageResult, Storage};
 use crate::script::{
-    time::DateTime, task::{Task, Event, Weekday, Month, Every, Stop}
+    task::{Event, Every, Month, Stop, Task, Weekday},
+    time::DateTime,
 };
+use crate::storage::{Error, Result as StorageResult, Storage};
 
 lazy_static! {
     pub static ref STORE: Mutex<Storage> = Mutex::new(Storage::new());
@@ -20,6 +22,16 @@ pub enum AttrValue {
     Int(i64),
     Float(f64),
     String(String),
+}
+
+impl AttrValue {
+    fn show(self) -> String {
+        match self {
+            AttrValue::Int(i) => i.to_string(),
+            AttrValue::Float(f) => f.to_string(),
+            AttrValue::String(s) => format!("'{}'", s),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Trace, VmType, Pushable, Getable, Serialize, Deserialize)]
@@ -44,6 +56,24 @@ pub struct Log {
     pub attrs: Attr,
 }
 
+impl Log {
+    fn new(typ: String, attrs: Attr) -> StorageResult<Log> {
+        STORE.lock().unwrap().create_log_attrs(&typ, attrs)
+    }
+
+    fn get(id: i32) -> StorageResult<Log> {
+        STORE.lock().unwrap().get_log(id)
+    }
+
+    fn set_attr(self, key: &str, val: AttrValue) -> StorageResult<()> {
+        STORE.lock().unwrap().log_set_attr(self.id, key, val)
+    }
+
+    fn find(filter: Attr, limit: Option<usize>) -> Vec<Log> {
+        STORE.lock().unwrap().find_log(to_document(&filter).unwrap(), limit)
+    }
+}
+
 #[derive(Clone, Debug, Trace, VmType, Pushable, Getable, Deserialize)]
 #[gluon_trace(skip)]
 pub struct Object {
@@ -64,22 +94,8 @@ pub struct Object {
     pub attrs: Attr,
 }
 
-impl Log {
-    fn new(typ: String, attrs: Attr) -> StorageResult<Log> {
-        STORE.lock().unwrap().create_log_attrs(&typ, attrs)
-    }
-
-    fn get(id: i32) -> StorageResult<Log> {
-        STORE.lock().unwrap().get_log(id)
-    }
-
-    fn set_attr(self, key: &str, val: AttrValue) -> StorageResult<()> {
-        STORE.lock().unwrap().log_set_attr(self.id, key, val)
-    }
-}
-
 impl Object {
-    fn new(name: String, typ: String, map: BTreeMap<String, String>) -> StorageResult<Object> {
+    fn new(name: String, typ: String, desc: Option<String>) -> StorageResult<Object> {
         let mut storage = STORE.lock().unwrap();
         let id = storage.create_obj(&name, &typ)?;
         let mut obj = Object {
@@ -92,10 +108,9 @@ impl Object {
             refs: Vec::new(),
             attrs: Attr(BTreeMap::new()),
         };
-        if map.contains_key("desc") {
-            let desc = map.get("desc").unwrap();
-            storage.obj_set_desc(id, desc)?;
-            obj.desc = Some(desc.into());
+        if let Some(desc) = desc {
+            storage.obj_set_desc(id, &desc)?;
+            obj.desc = Some(desc);
         }
         Ok(obj)
     }
@@ -139,6 +154,10 @@ impl Object {
     fn del_attr(obj: Object, attr: &str) -> StorageResult<()> {
         STORE.lock().unwrap().obj_del_attr(obj.id, attr)
     }
+
+    fn find(filter: Attr, limit: Option<usize>) -> Vec<Object> {
+        STORE.lock().unwrap().find_obj(to_document(&filter).unwrap(), limit)
+    }
 }
 
 pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
@@ -156,6 +175,7 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
                 new => primitive!(2, Log::new),
                 get => primitive!(1, Log::get),
                 set_attr => primitive!(3, Log::set_attr),
+                find => primitive!(2, Log::find),
             },
 
             obj => record! {
@@ -171,6 +191,7 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
                 del_ref => primitive!(2, Object::del_ref),
                 del_dep => primitive!(2, Object::del_dep),
                 del_attr => primitive!(2, Object::del_attr),
+                find => primitive!(2, Object::find),
             },
 
             task => record! {
@@ -183,6 +204,10 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
                 type Event => Event,
                 new => primitive!(6, Event::new),
                 get => primitive!(1, Event::get),
+            },
+
+            attr => record! {
+                show => primitive!(1, AttrValue::show),
             },
 
             add_handler => primitive!(2, |pat, func| {

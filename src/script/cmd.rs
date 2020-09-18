@@ -13,6 +13,8 @@ use gluon::{
 };
 use rustyline::{error::ReadlineError, Editor};
 
+use crate::util::print_gluon_err;
+
 #[derive(Clone, Debug, Userdata, Trace, VmType)]
 #[gluon_userdata(clone)]
 #[gluon(vm_type = "cmd.ArgMatches")]
@@ -62,11 +64,15 @@ pub fn cmd_repl() -> bool {
                         Ok(matches) => {
                             let (name, submatches) = matches.subcommand();
                             if name.len() != 0 {
-                                let _ = cmds
+                                let res = cmds
                                     .1
                                     .get_mut(name)
                                     .unwrap()
                                     .call(ArgMatches(submatches.unwrap().clone()));
+                                if let Err(e) = res {
+                                    eprintln!("Error running command handler:");
+                                    print_gluon_err(e.into());
+                                }
                             }
                         }
                         Err(e) => {

@@ -1,8 +1,8 @@
 pub mod cmd;
 pub mod job;
 pub mod sched;
-pub mod time;
 pub mod task;
+pub mod time;
 
 use std::fs::read_to_string;
 use std::path::{Path, PathBuf};

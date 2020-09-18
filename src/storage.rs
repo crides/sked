@@ -1,8 +1,8 @@
-use bson::{doc, document::ValueAccessError, Bson, Document, to_bson, from_bson};
+use bson::{doc, document::ValueAccessError, from_bson, to_bson, Bson, Document};
 use chrono::Utc;
 use mongodb::sync::{Client, Collection};
 
-use crate::script::sched::{Object, Log, AttrValue, Attr};
+use crate::script::sched::{Attr, AttrValue, Log, Object};
 use crate::signal::{SignalHandler, SignalHandlers};
 
 #[derive(Clone, Debug, Trace, VmType, Pushable, Getable)]
@@ -12,8 +12,8 @@ pub enum Error {
     InvalidKey(String),
     InvalidLogID(i32),
     InvalidObjID(i32),
-    ObjTypeNotTask(i32),
-    ObjTypeNotEvent(i32),
+    ObjNotTask(i32),
+    ObjNotEvent(i32),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -132,6 +132,15 @@ impl Storage {
             .unwrap()
             .ok_or_else(|| Error::InvalidLogID(id))?;
         Ok(from_bson(Bson::Document(log)).unwrap())
+    }
+
+    pub fn find_log(&mut self, filter: Document, limit: Option<usize>) -> Vec<Log> {
+        self.logs
+            .find(Some(filter), None)
+            .unwrap()
+            .take(limit.unwrap_or(std::usize::MAX))
+            .map(|l| from_bson(Bson::Document(l.unwrap())).unwrap())
+            .collect()
     }
 
     pub fn get_obj_id(&mut self) -> i32 {
@@ -275,5 +284,14 @@ impl Storage {
             .unwrap()
             .ok_or_else(|| Error::InvalidObjID(id))?;
         Ok(from_bson(Bson::Document(obj)).unwrap())
+    }
+
+    pub fn find_obj(&mut self, filter: Document, limit: Option<usize>) -> Vec<Object> {
+        self.objs
+            .find(Some(filter), None)
+            .unwrap()
+            .take(limit.unwrap_or(std::usize::MAX))
+            .map(|o| from_bson(Bson::Document(o.unwrap())).unwrap())
+            .collect()
     }
 }

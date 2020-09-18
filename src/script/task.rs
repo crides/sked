@@ -1,10 +1,10 @@
 use std::iter::once;
 
-use bson::{doc, Document, Bson};
+use bson::{doc, Bson, Document};
 
 use crate::script::{
-    time::{DateTime, Duration, Time},
     sched::{Object, STORE},
+    time::{DateTime, Duration, Time},
 };
 use crate::storage::Result as StorageResult;
 use crate::util::bits;
@@ -41,8 +41,18 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn new(name: &str, start: DateTime, every: Every, stop: Stop, event_start: Time, duration: Duration) -> StorageResult<i32> {
-        STORE.lock().unwrap().create_event(name, start, every, stop, event_start, duration)
+    pub fn new(
+        name: &str,
+        start: DateTime,
+        every: Every,
+        stop: Stop,
+        event_start: Time,
+        duration: Duration,
+    ) -> StorageResult<i32> {
+        STORE
+            .lock()
+            .unwrap()
+            .create_event(name, start, every, stop, event_start, duration)
     }
 
     pub fn get(id: i32) -> StorageResult<Event> {
@@ -162,14 +172,18 @@ impl Every {
             Ok("day") => Every::Day,
             Ok("week") => {
                 let bits = bits(d.get_i32("data").unwrap() as u32, 7);
-                let days = bits.enumerate().filter(|(_, b)| *b).map(|(i, _)| Weekday::from_num(i)).collect();
+                let days = bits
+                    .enumerate()
+                    .filter(|(_, b)| *b)
+                    .map(|(i, _)| Weekday::from_num(i))
+                    .collect();
                 Every::Week(days)
-            },
+            }
             Ok("month") => {
                 let bits = bits(d.get_i32("data").unwrap() as u32, 31);
                 let days = bits.enumerate().filter(|(_, b)| *b).map(|(i, _)| i as u32).collect();
                 Every::Month(days)
-            },
+            }
             Ok("year") => {
                 let arr: Vec<i32> = match d.remove("deps") {
                     Some(Bson::Array(a)) => a.into_iter().map(|d| d.as_i32().unwrap()).collect(),
@@ -184,7 +198,7 @@ impl Every {
                     res.push((m, days));
                 }
                 Every::Year(res)
-            },
+            }
             _ => panic!("Unknown 'head' type when deserializing `Every`: {}", d),
         }
     }
@@ -211,7 +225,12 @@ impl Stop {
         match d.get_str("head") {
             Ok("none") => Stop::None,
             Ok("count") => Stop::Count(d.get_i32("data").expect("expected `i32` for 'data'")),
-            Ok("after") => Stop::After(d.get_datetime("data").expect("expected `DateTime` for 'data'").clone().into()),
+            Ok("after") => Stop::After(
+                d.get_datetime("data")
+                    .expect("expected `DateTime` for 'data'")
+                    .clone()
+                    .into(),
+            ),
             _ => panic!("Unknown 'head' type when deserializing `Stop`: {}", d),
         }
     }

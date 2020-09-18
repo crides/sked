@@ -1,8 +1,9 @@
 use gluon::vm::api::{OwnedFunction, IO};
 use regex::Regex;
 
-use crate::storage::{Error, Result};
 use crate::script::sched::Log;
+use crate::storage::{Error, Result};
+use crate::util::print_gluon_err;
 
 pub type SignalHandler = OwnedFunction<fn(Log) -> IO<()>>;
 
@@ -29,7 +30,10 @@ impl SignalHandlers {
     pub fn handle(&mut self, l: &Log) {
         for handler in &mut self.0 {
             if handler.pat.is_match(&l.typ) {
-                handler.func.call(l.clone()).unwrap();
+                if let Err(e) = handler.func.call(l.clone()) {
+                    eprintln!("Error running signal handler:");
+                    print_gluon_err(e.into());
+                }
             }
         }
     }

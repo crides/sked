@@ -1,12 +1,16 @@
 use std::fmt;
 
-use chrono::{FixedOffset, Local, Offset, Utc, Timelike};
-use serde::{Serialize, Deserialize, Serializer, Deserializer, ser::SerializeMap, de::{self, Visitor, MapAccess}};
+use chrono::{FixedOffset, Local, Offset, Timelike, Utc};
 use gluon::{
     vm::{api::Getable, ExternModule, Result as GluonResult, Variants},
     Thread,
 };
 use gluon_codegen::*;
+use serde::{
+    de::{self, MapAccess, Visitor},
+    ser::SerializeMap,
+    Deserialize, Deserializer, Serialize, Serializer,
+};
 
 #[derive(Clone, Copy, Debug, Userdata, Trace, VmType)]
 #[gluon_userdata(clone)]
@@ -29,7 +33,9 @@ impl<'vm, 'value> Getable<'vm, 'value> for DateTime {
 
 impl Serialize for DateTime {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where S: Serializer {
+    where
+        S: Serializer,
+    {
         let mut map = serializer.serialize_map(Some(1))?;
         map.serialize_entry("$date", &self.0.to_rfc3339())?;
         map.end()
@@ -60,7 +66,9 @@ impl<'de> Deserialize<'de> for DateTime {
                         return Err(de::Error::duplicate_field("$date"));
                     }
                     let s: String = map.next_value()?;
-                    date = Some(DateTime(chrono::DateTime::<chrono::FixedOffset>::parse_from_rfc3339(&s).unwrap()))
+                    date = Some(DateTime(
+                        chrono::DateTime::<chrono::FixedOffset>::parse_from_rfc3339(&s).unwrap(),
+                    ))
                 }
                 date.ok_or_else(|| de::Error::missing_field("$date"))
             }

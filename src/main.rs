@@ -19,6 +19,7 @@ use dirs::config_dir;
 use tokio::{select, time::delay_for};
 
 use script::job;
+use util::print_gluon_err;
 
 #[tokio::main]
 async fn main() {
@@ -29,7 +30,7 @@ async fn main() {
     let init_file = config_dir.join("init.glu");
     let vm = script::get_vm(config_dir);
     if let Err(e) = script::run_user(&vm, &init_file) {
-        println!("{}", e);
+        print_gluon_err(e);
     }
     let job_task = tokio::task::spawn(async {
         loop {
@@ -45,7 +46,7 @@ async fn main() {
             if r {
                 let res = repl::run(&vm, "> ").await;
                 if let Err(e) = res {
-                    println!("{}", e);
+                    print_gluon_err(e);
                 }
             }
         },
