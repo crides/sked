@@ -15,8 +15,7 @@ lazy_static! {
     pub static ref STORE: Mutex<Storage> = Mutex::new(Storage::new());
 }
 
-#[derive(Clone, Debug, Trace, VmType, Pushable, Getable, Serialize, Deserialize)]
-#[gluon_trace(skip)]
+#[derive(Clone, Debug, VmType, Pushable, Getable, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AttrValue {
     Int(i64),
@@ -34,8 +33,7 @@ impl AttrValue {
     }
 }
 
-#[derive(Clone, Debug, Trace, VmType, Pushable, Getable, Serialize, Deserialize)]
-#[gluon_trace(skip)]
+#[derive(Clone, Debug, VmType, Pushable, Getable, Serialize, Deserialize)]
 pub struct Attr(pub BTreeMap<String, AttrValue>);
 
 impl Default for Attr {
@@ -44,8 +42,7 @@ impl Default for Attr {
     }
 }
 
-#[derive(Clone, Debug, Trace, VmType, Pushable, Getable, Deserialize)]
-#[gluon_trace(skip)]
+#[derive(Clone, Debug, VmType, Pushable, Getable, Deserialize)]
 pub struct Log {
     #[serde(rename(deserialize = "_id"))]
     pub id: i32,
@@ -74,8 +71,7 @@ impl Log {
     }
 }
 
-#[derive(Clone, Debug, Trace, VmType, Pushable, Getable, Deserialize)]
-#[gluon_trace(skip)]
+#[derive(Clone, Debug, VmType, Pushable, Getable, Deserialize)]
 pub struct Object {
     #[serde(rename(deserialize = "_id"))]
     pub id: i32,
@@ -210,7 +206,7 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
                 show => primitive!(1, AttrValue::show),
             },
 
-            add_handler => primitive!(2, |pat, func| {
+            handle => primitive!(2, |pat, func| {
                 STORE.lock().unwrap().add_gluon(pat, func)
             }),
         },

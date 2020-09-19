@@ -1,6 +1,6 @@
 use bson::{doc, document::ValueAccessError, from_bson, to_bson, Bson, Document};
 use chrono::Utc;
-use mongodb::sync::{Client, Collection};
+use mongodb::{options::FindOptions, sync::{Client, Collection}};
 
 use crate::script::sched::{Attr, AttrValue, Log, Object};
 use crate::signal::{SignalHandler, SignalHandlers};
@@ -136,7 +136,7 @@ impl Storage {
 
     pub fn find_log(&mut self, filter: Document, limit: Option<usize>) -> Vec<Log> {
         self.logs
-            .find(Some(filter), None)
+            .find(Some(filter), Some(FindOptions::builder().sort(doc! { "_id": -1 }).build()))
             .unwrap()
             .take(limit.unwrap_or(std::usize::MAX))
             .map(|l| from_bson(Bson::Document(l.unwrap())).unwrap())
@@ -288,7 +288,7 @@ impl Storage {
 
     pub fn find_obj(&mut self, filter: Document, limit: Option<usize>) -> Vec<Object> {
         self.objs
-            .find(Some(filter), None)
+            .find(Some(filter), Some(FindOptions::builder().sort(doc! { "_id": -1 }).build()))
             .unwrap()
             .take(limit.unwrap_or(std::usize::MAX))
             .map(|o| from_bson(Bson::Document(o.unwrap())).unwrap())
