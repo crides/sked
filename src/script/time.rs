@@ -274,6 +274,7 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
                 weeks => primitive!(1, Duration::weeks),
                 eq => primitive!(2, Duration::eq),
                 lt => primitive!(2, Duration::lt),
+                to_secs => primitive!(1, |d: Duration| d.to_parts().0),
                 show => primitive!(1, Duration::show),
             },
         },

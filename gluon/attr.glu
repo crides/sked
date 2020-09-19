@@ -1,0 +1,14 @@
+let { AttrValue } = import! sched
+
+let av_show : Show AttrValue = {
+    show = \v ->
+        match v with
+        | Int i -> "Int(" ++ show i ++ ")"
+        | Float f -> "Float(" ++ show f ++ ")"
+        | String s -> "String(" ++ show s ++ ")"
+}
+
+{
+    AttrValue,
+    show = av_show,
+}

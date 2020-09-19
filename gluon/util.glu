@@ -1,0 +1,56 @@
+let { ? } = import! std.string
+let { DateTime, ? } = (import! time).time
+let { Map } = import! std.map
+let attr @ { AttrValue, ? } = import! attr
+let { (<>) } = import! std.semigroup
+
+let map_show ?a ?b : [Show k] -> [Show v] -> Show (Map k v) = {
+    show = \m ->
+        rec let show_elems m =
+            match m with
+            | Tip -> ""
+            | Bin k v left Tip -> show_elems left <> a.show k <> ": " <> b.show v
+            | Bin k v left right -> show_elems left <> a.show k <> ": " <> b.show v <> ", " <> show_elems right
+        "{" <> show_elems m <> "}",
+}
+
+let { ? } = { show = map_show }
+
+#[derive(Show)]
+type Log = {
+    id: Int,
+    typ: String,
+    time: DateTime,
+    attrs: Map String AttrValue,
+}
+
+#[derive(Show)]
+type Object = {
+    id: Int,
+    name: String,
+    typ: String,
+    desc: Option String,
+    deps: Array Int,
+    subs: Array Int,
+    refs: Array Int,
+    attrs: Map String AttrValue,
+}
+
+{
+    log = {
+        Log,
+        show = show_Log,
+    },
+    map = {
+        Map,
+        show = map_show,
+    },
+    obj = {
+        Object,
+        show = show_Object,
+    },
+    attr = {
+        AttrValue,
+        show = attr.show,
+    },
+}

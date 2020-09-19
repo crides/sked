@@ -25,6 +25,9 @@ let time_ord : Ord DateTime =
         else
             GT
     { eq = time_eq, compare }
+let time_show : Show DateTime = {
+    show = \t -> time.format t "%Y.%m.%d..%H.%M.%S"
+}
 
 {
     duration = {
@@ -33,6 +36,7 @@ let time_ord : Ord DateTime =
     },
     time = {
         DateTime,
+        show = time_show,
         .. time
     },
     timezone = {
