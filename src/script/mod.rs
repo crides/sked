@@ -1,5 +1,4 @@
 pub mod cmd;
-pub mod job;
 pub mod sched;
 pub mod task;
 pub mod time;
@@ -19,7 +18,6 @@ pub fn get_vm(config_dir: PathBuf) -> RootedThread {
     add_extern_module(&vm, "time.prim", time::load);
     add_extern_module(&vm, "cmd", cmd::load);
     add_extern_module_with_deps(&vm, "sched", sched::load, vec!["std.map".into(), "time.prim".into()]);
-    add_extern_module_with_deps(&vm, "jobs", job::load, vec!["time.prim".into()]);
     vm
 }
 

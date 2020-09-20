@@ -13,12 +13,9 @@ mod task;
 mod util;
 
 use std::fs;
-use std::time::Duration;
 
 use dirs::config_dir;
-use tokio::{select, time::delay_for};
 
-use script::job;
 use util::print_gluon_err;
 
 #[tokio::main]
@@ -32,23 +29,10 @@ async fn main() {
     if let Err(e) = script::run_user(&vm, &init_file) {
         print_gluon_err(e);
     }
-    let job_task = tokio::task::spawn(async {
-        loop {
-            job::run();
-            delay_for(Duration::from_millis(200)).await;
+    if script::cmd::cmd_repl() {
+        let res = repl::run(&vm, "> ").await;
+        if let Err(e) = res {
+            print_gluon_err(e);
         }
-    });
-    let cmd_repl = async { script::cmd::cmd_repl() };
-
-    select! {
-        _ = job_task => (),
-        r = cmd_repl => {
-            if r {
-                let res = repl::run(&vm, "> ").await;
-                if let Err(e) = res {
-                    print_gluon_err(e);
-                }
-            }
-        },
     }
 }
