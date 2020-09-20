@@ -565,14 +565,13 @@ fn compile_repl(vm: &Thread) -> Result<(), GluonError> {
     Ok(())
 }
 
-pub async fn run(vm: &RootedThread, prompt: &str) -> gluon::Result<()> {
+pub fn run(vm: &RootedThread, prompt: &str) -> gluon::Result<()> {
     vm.get_database_mut().run_io(true);
 
     compile_repl(&vm)?;
 
     let mut repl: OwnedFunction<fn(_) -> _> = vm.get_global("repl")?;
-    repl.call_async(Settings { prompt })
-        .await
+    repl.call(Settings { prompt })
         .map(|_: IO<()>| ())
         .map_err(|err| err.into())
 }

@@ -18,8 +18,7 @@ use dirs::config_dir;
 
 use util::print_gluon_err;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let config_dir = config_dir().unwrap().join("sched");
     if !config_dir.is_dir() {
         fs::create_dir_all(&config_dir).unwrap();
@@ -30,7 +29,7 @@ async fn main() {
         print_gluon_err(e);
     }
     if script::cmd::cmd_repl() {
-        let res = repl::run(&vm, "> ").await;
+        let res = repl::run(&vm, "> ");
         if let Err(e) = res {
             print_gluon_err(e);
         }
