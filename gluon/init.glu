@@ -1,20 +1,23 @@
-let map @ { singleton, find, insert } = import! std.map
+let { singleton, find, insert, ? } = import! std.map
 let array @ { Array, ? } = import! std.array
 let list @ { List, ? } = import! std.list
 let io @ { ? } = import! std.io
+let string = import! std.string
 let { proc, execute } = import! std.process
-let { Result, unwrap_ok, ? } = import! std.result
+let { Result, unwrap_ok, to_option, ? } = import! std.result
 let sched = import! sched
-let util @ { log = { Log, ? }, map = { Map, ? }, obj = { Object, ? }, attr = { AttrValue, ? }, ? } = import! util
-let jobs = import! jobs
+let { log = { Log, ? }, map = { Map, ? }, obj = { Object, ? }, attr = { AttrValue, ? }, ? } = import! util
 let { time, duration, ? } = import! time
 let { DateTime, ? } = time
 let { Duration, ? } = duration
 let { (<|), (|>) } = import! std.function
 let { (<>) } = import! std.semigroup
-let cmd = import! cmd
+let { (>>=) } = import! std.monad
+let { empty } = import! std.monoid
+let { map } = import! std.functor
+let { command, value_of, values_of } = import! cmd
 let { unwrap } = import! std.option
-let { foldl, foldr } = import! std.foldable
+let { any, all, foldl, foldr } = import! std.foldable
 let { for } = import! std.traversable
 let { ? } = import! std.char
 
@@ -27,13 +30,13 @@ let attr_as_str a : AttrValue -> String =
 
 let attr_as_int a : AttrValue -> Int =
     match a with
-    | Int i -> i
     | String s ->
         error "AttrValue is String(" <> s <> ") not Int"
         42
     | Float f ->
         error "AttrValue is Float(" <> show f <> ") not Int"
         42
+    | Int i -> i
 
 let attr_as_float a : AttrValue -> Float =
     match a with
@@ -49,9 +52,9 @@ let arr_to_map a : Array String -> Map String AttrValue =
     (foldl (\mk x ->
             let { m, k } = mk
             match k with
-            | Some key -> { m = map.insert key (String x) m, k = None }
+            | Some key -> { m = insert key (String x) m, k = None }
             | None -> { m, k = Some x })
-        { m = map.empty, k = None } a).m
+        { m = empty, k = None } a).m
 
 let join a sep : Array String -> String -> String =
     match array.len a with
@@ -88,10 +91,13 @@ let set_diff a b : [Ord o] -> List o -> List o -> { x: List o, y: List o } =
     _set_diff (uniq a) (uniq b) Nil Nil
 
 // Stateful utility functions (calls some form of API)
-let time_from state cur : String -> DateTime -> Duration =
-    let filter = map.insert "type" (String "state.change.add") <| singleton "attrs.add" (String state)
-    let last_log = sched.log.find filter (Some 1) |> \ls -> array.index ls 0
-    time.sub cur last_log.time
+let time_from state : String -> Option Duration =
+    let filter = insert "type" (String "state.change.add") <| singleton "attrs.add" (String state)
+    let last_log = sched.log.find filter (Some 1)
+    if array.len last_log == 0 then
+        None
+    else
+        Some <| time.sub (time.local_now ()) <| (array.index last_log 0).time
 
 let notify body : String -> IO () =
     seq proc "notify-send" ["Sched", body] |> execute
@@ -101,44 +107,60 @@ let notify body : String -> IO () =
 sched.handle "state.stat.length" (\l -> notify <| "\"" <> attr_as_str (unwrap (find "state" l.attrs)) <> "\"'ed for " <> show (attr_as_int (unwrap (find "length" l.attrs))) <> "secs")
 
 // Commands
-cmd.command "new-log"
+command "new-log"
     "<type>     'Type for the log'
      -d --desc=[desc]   	  'Optional description. Equivalent to --arg desc ...'
      -a --attr [key] [val]... 'Optional attributes'"
     (\m ->
-        let typ = unwrap <| cmd.value_of m "type"
-        let attrs = arr_to_map <| cmd.values_of m "attr"
+        let typ = unwrap <| value_of m "type"
+        let attrs = arr_to_map <| values_of m "attr"
         let attrs =
-            match cmd.value_of m "desc" with
-            | Some d -> map.insert "desc" (String d) attrs
+            match value_of m "desc" with
+            | Some d -> insert "desc" (String d) attrs
             | None -> attrs
         let log = unwrap_ok <| sched.log.new typ attrs
         seq io.println <| show <| log.id
         io.wrap ())
 
-cmd.command "state"
+command "time-from"
+    "<state>    'Name for the state'"
+    (\m ->
+        let state = value_of m "state" |> unwrap
+        match time_from state with
+        | Some dur -> io.println <| (show (duration.to_secs dur)) <> "secs"
+        | None -> io.eprintln <| "State 'add' event doesn't exist")
+
+command "state"
     "[states]...  'States to set. Or empty to query current state'"
     (\m ->
-        let obj = sched.obj.find (map.singleton "type" (String "state")) (Some 1)
+        let obj = sched.obj.find (singleton "type" (String "state")) (Some 1)
         let obj =
             if array.len obj == 0 then
                 let obj = unwrap_ok <| sched.obj.new "state" "state" None
                 sched.obj.set_attr obj "state" (String "")
-                let obj = { attrs = map.insert "state" (String "") obj.attrs, .. obj }
+                let obj = { attrs = insert "state" (String "") obj.attrs, .. obj }
                 obj
             else
                 array.index obj 0
-        let states = cmd.values_of m "states"
-        let old_states = attr_as_str <| unwrap <| map.find "state" obj.attrs
-        if array.len states == 0 then
-            io.println <| old_states
+        let states = values_of m "states"
+        if any (\e -> string.contains e ",") states then
+            io.eprintln "No comma allowed in arguments"
         else
-            let diffs = set_diff (list.of states) (split ',' old_states)
-            for diffs.x (\new -> sched.log.new "state.change.add" <| map.singleton "add" (String new))
-            for diffs.y (\rem ->
-                sched.log.new "state.change.rem" <| map.singleton "rem" (String rem)
-                let now = time.local_now ()
-                let diff = duration.to_secs <| time_from rem now
-                sched.log.new "state.stat.length" <| insert "length" (Int diff) <| singleton "state" (String rem))
-            sched.obj.set_attr obj "state" (String (join states ","))
-            io.wrap ())
+            let old_states = attr_as_str <| unwrap <| find "state" obj.attrs
+            if array.len states == 0 then
+                io.println <| old_states
+            else
+                let diffs = set_diff (list.of states) (split ',' old_states)
+                seq io.println <| show diffs.x <> show diffs.y
+                for diffs.x (\new ->
+                    sched.log.new "state.change.add" <| singleton "add" (String new)
+                    io.println "  added")
+                seq io.println "added"
+                for diffs.y (\rem ->
+                    sched.log.new "state.change.rem" <| singleton "rem" (String rem)
+                    let now = time.local_now ()
+                    do diff = map duration.to_secs <| time_from rem
+                    to_option <| sched.log.new "state.stat.length" <| insert "length" (Int diff) <| singleton "state" (String rem))
+                seq io.println "remed"
+                sched.obj.set_attr obj "state" (String (join states ","))
+                io.println "asdf")
