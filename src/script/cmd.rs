@@ -53,7 +53,7 @@ pub fn cmd_repl() -> bool {
                     break true;
                 }
                 let args = line.split_ascii_whitespace();
-                CMDS.with(|c| {
+                let res = CMDS.with(|c| {
                     let mut cmds = c.lock().unwrap();
                     match cmds
                         .0
@@ -72,6 +72,7 @@ pub fn cmd_repl() -> bool {
                                 if let Err(e) = res {
                                     eprintln!("Error running command handler:");
                                     print_gluon_err(e.into());
+                                    return false;
                                 }
                             }
                         }
@@ -79,7 +80,11 @@ pub fn cmd_repl() -> bool {
                             eprintln!("{}", e.message);
                         }
                     }
+                    true
                 });
+                if !res {
+                    break false;
+                }
             }
             Err(ReadlineError::Eof) => {
                 break false;
