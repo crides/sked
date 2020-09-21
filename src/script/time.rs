@@ -208,16 +208,31 @@ impl Duration {
         self.0 < b.0
     }
 
-    pub fn to_parts(&self) -> (i64, i32) {
-        let d = self.0;
-        let secs = d.num_seconds();
-        let nano_secs = (d - chrono::Duration::seconds(secs)).num_nanoseconds().unwrap() as i32;
-        (secs, nano_secs)
+    pub fn num_seconds(&self) -> i64 {
+        self.0.num_seconds()
     }
 
     fn show(&self) -> String {
-        let (secs, nano_secs) = self.to_parts();
-        format!("Duration({}.{:09})", secs, nano_secs)
+        self.format("%Dd %Hh %Mm %Ss")
+    }
+
+    fn format(&self, format: &str) -> String {
+        let secs = self.num_seconds();
+        let mins = secs / 60;
+        let hours = secs / 3600;
+        let days = secs / 86400;
+        let weeks = secs / (86400 * 7);
+        format
+            .replace("%%", "%")
+            .replace("%s", &secs.to_string())
+            .replace("%m", &mins.to_string())
+            .replace("%h", &hours.to_string())
+            .replace("%d", &days.to_string())
+            .replace("%w", &weeks.to_string())
+            .replace("%S", &(secs % 60).to_string())
+            .replace("%M", &(mins % 60).to_string())
+            .replace("%H", &(hours % 24).to_string())
+            .replace("%D", &(days % 7).to_string())
     }
 }
 
@@ -274,8 +289,9 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
                 weeks => primitive!(1, Duration::weeks),
                 eq => primitive!(2, Duration::eq),
                 lt => primitive!(2, Duration::lt),
-                to_secs => primitive!(1, |d: Duration| d.to_parts().0),
+                to_secs => primitive!(1, |d: Duration| d.num_seconds()),
                 show => primitive!(1, Duration::show),
+                format => primitive!(2, Duration::format),
             },
         },
     )
