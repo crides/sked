@@ -3,10 +3,10 @@ use std::iter::once;
 use bson::{doc, Bson, Document};
 
 use crate::script::{
-    sched::{Object, STORE},
+    sched::Object,
     time::{DateTime, Duration, Time},
 };
-use crate::storage::Result as StorageResult;
+use crate::storage::{lock_store, Result as StorageResult};
 use crate::util::bits;
 
 #[derive(Clone, Debug, Trace, VmType, Pushable, Getable)]
@@ -21,11 +21,11 @@ pub struct Task {
 
 impl Task {
     pub fn new(name: &str, start: DateTime, every: Every, stop: Stop, deadline: Time) -> StorageResult<i32> {
-        STORE.lock().unwrap().create_task(name, start, every, stop, deadline)
+        lock_store()?.create_task(name, start, every, stop, deadline)
     }
 
     pub fn get(id: i32) -> StorageResult<Task> {
-        STORE.lock().unwrap().get_task(id)
+        lock_store()?.get_task(id)
     }
 }
 
@@ -49,14 +49,11 @@ impl Event {
         event_start: Time,
         duration: Duration,
     ) -> StorageResult<i32> {
-        STORE
-            .lock()
-            .unwrap()
-            .create_event(name, start, every, stop, event_start, duration)
+        lock_store()?.create_event(name, start, every, stop, event_start, duration)
     }
 
     pub fn get(id: i32) -> StorageResult<Event> {
-        STORE.lock().unwrap().get_event(id)
+        lock_store()?.get_event(id)
     }
 }
 

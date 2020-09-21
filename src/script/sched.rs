@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, TryLockError};
 
 use bson::to_document;
 use gluon::{vm::ExternModule, Thread};
@@ -53,21 +53,29 @@ pub struct Log {
     pub attrs: Attr,
 }
 
+pub fn lock_store() -> StorageResult<MutexGuard<Storage>> {
+    match STORE.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::WouldBlock) => Err(Error::Deadlock),
+        Err(TryLockError::Poisoned(_)) => panic!("STORE lock poisoned"),
+    }
+}
+
 impl Log {
     fn new(typ: String, attrs: Attr) -> StorageResult<Log> {
-        STORE.lock().unwrap().create_log_attrs(&typ, attrs)
+        lock_store()?.create_log_attrs(&typ, attrs)
     }
 
     fn get(id: i32) -> StorageResult<Log> {
-        STORE.lock().unwrap().get_log(id)
+        lock_store()?.get_log(id)
     }
 
     fn set_attr(self, key: &str, val: AttrValue) -> StorageResult<()> {
-        STORE.lock().unwrap().log_set_attr(self.id, key, val)
+        lock_store()?.log_set_attr(self.id, key, val)
     }
 
     fn find(filter: Attr, limit: Option<usize>) -> Vec<Log> {
-        STORE.lock().unwrap().find_log(to_document(&filter).unwrap(), limit)
+        lock_store()?.find_log(to_document(&filter).unwrap(), limit)
     }
 }
 
@@ -92,7 +100,7 @@ pub struct Object {
 
 impl Object {
     fn new(name: String, typ: String, desc: Option<String>) -> StorageResult<Object> {
-        let mut storage = STORE.lock().unwrap();
+        let mut storage = lock_store()?;
         let id = storage.create_obj(&name, &typ)?;
         let mut obj = Object {
             id,
@@ -112,47 +120,47 @@ impl Object {
     }
 
     fn get(id: i32) -> StorageResult<Object> {
-        STORE.lock().unwrap().get_obj(id)
+        lock_store()?.get_obj(id)
     }
 
     fn set_desc(obj: Object, desc: &str) -> StorageResult<()> {
-        STORE.lock().unwrap().obj_set_desc(obj.id, desc)
+        lock_store()?.obj_set_desc(obj.id, desc)
     }
 
     fn add_sub(obj: Object, sub: i32) -> StorageResult<()> {
-        STORE.lock().unwrap().obj_add_sub(obj.id, sub)
+        lock_store()?.obj_add_sub(obj.id, sub)
     }
 
     fn add_ref(obj: Object, rf: i32) -> StorageResult<()> {
-        STORE.lock().unwrap().obj_add_ref(obj.id, rf)
+        lock_store()?.obj_add_ref(obj.id, rf)
     }
 
     fn add_dep(obj: Object, dep: i32) -> StorageResult<()> {
-        STORE.lock().unwrap().obj_add_dep(obj.id, dep)
+        lock_store()?.obj_add_dep(obj.id, dep)
     }
 
     fn set_attr(obj: Object, key: &str, val: AttrValue) -> StorageResult<()> {
-        STORE.lock().unwrap().obj_set_attr(obj.id, key, val)
+        lock_store()?.obj_set_attr(obj.id, key, val)
     }
 
     fn del_sub(obj: Object, sub: i32) -> StorageResult<()> {
-        STORE.lock().unwrap().obj_del_sub(obj.id, sub)
+        lock_store()?.obj_del_sub(obj.id, sub)
     }
 
     fn del_ref(obj: Object, rf: i32) -> StorageResult<()> {
-        STORE.lock().unwrap().obj_del_ref(obj.id, rf)
+        lock_store()?.obj_del_ref(obj.id, rf)
     }
 
     fn del_dep(obj: Object, dep: i32) -> StorageResult<()> {
-        STORE.lock().unwrap().obj_del_dep(obj.id, dep)
+        lock_store()?.obj_del_dep(obj.id, dep)
     }
 
     fn del_attr(obj: Object, attr: &str) -> StorageResult<()> {
-        STORE.lock().unwrap().obj_del_attr(obj.id, attr)
+        lock_store()?.obj_del_attr(obj.id, attr)
     }
 
     fn find(filter: Attr, limit: Option<usize>) -> Vec<Object> {
-        STORE.lock().unwrap().find_obj(to_document(&filter).unwrap(), limit)
+        lock_store()?.find_obj(to_document(&filter).unwrap(), limit)
     }
 }
 
@@ -207,7 +215,7 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
             },
 
             handle => primitive!(2, |pat, func| {
-                STORE.lock().unwrap().add_gluon(pat, func)
+                lock_store()?.add_gluon(pat, func)
             }),
         },
     )
