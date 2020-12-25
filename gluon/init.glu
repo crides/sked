@@ -1,54 +1,30 @@
-let { singleton, find, insert, ? } = import! std.map
+let { to_list, singleton, find, insert, ? } = import! std.map
 let array @ { Array, ? } = import! std.array
 let list @ { List, ? } = import! std.list
-let io @ { ? } = import! std.io
+let { println, eprintln, ? } = import! std.io
 let string = import! std.string
 let { proc, execute } = import! std.process
 let { Result, unwrap_ok, to_option, ? } = import! std.result
 let sched = import! sched
-let { log = { Log, ? }, map = { Map, ? }, obj = { Object, ? }, attr = { AttrValue, ? }, ? } = import! util
-let { time, duration, ? } = import! time
-let { DateTime, ? } = time
+let { log = { Log, ? }, map = { Map, ? }, obj = { Object, ? }, json = { Value, ? }, ? } = import! util
+let { datetime, duration, ? } = import! time
+let { DateTime, ? } = datetime
 let { Duration, ? } = duration
 let { (<|), (|>) } = import! std.function
 let { (<>) } = import! std.semigroup
 let { (>>=) } = import! std.monad
 let { empty } = import! std.monoid
 let { map } = import! std.functor
-let { command, value_of, values_of } = import! cmd
-let { unwrap } = import! std.option
-let { any, all, foldl, foldr } = import! std.foldable
+let { cmd, value_of, values_of } = import! cmd
+let { unwrap, unwrap_or } = import! std.option
+let { Foldable, any, all, foldl, foldr } = import! std.foldable
 let { for } = import! std.traversable
 let { ? } = import! std.char
+let { (<*), (*>), wrap } = import! std.applicative
+let { to_string, ? } = import! std.json.ser
 
 // Pure utility functions
-let attr_as_str a : AttrValue -> String =
-    match a with
-    | String s -> s
-    | Int i -> error "AttrValue is Int(" <> show i <> ") not String"
-    | Float f -> error "AttrValue is Float(" <> show f <> ") not String"
-
-let attr_as_int a : AttrValue -> Int =
-    match a with
-    | String s ->
-        error "AttrValue is String(" <> s <> ") not Int"
-        42
-    | Float f ->
-        error "AttrValue is Float(" <> show f <> ") not Int"
-        42
-    | Int i -> i
-
-let attr_as_float a : AttrValue -> Float =
-    match a with
-    | Float f -> f
-    | String s ->
-        error "AttrValue is String(" <> s <> ") not Float"
-        42.42
-    | Int i ->
-        error "AttrValue is Int(" <> show i <> ") not Float"
-        42.42
-
-let arr_to_map a : Array String -> Map String AttrValue =
+let arr_to_map a : Array String -> Map String Value =
     (foldl (\mk x ->
             let { m, k } = mk
             match k with
@@ -56,111 +32,40 @@ let arr_to_map a : Array String -> Map String AttrValue =
             | None -> { m, k = Some x })
         { m = empty, k = None } a).m
 
-let join a sep : Array String -> String -> String =
-    match array.len a with
-    | 0 -> ""
-    | 1 -> array.index a 0
-    | n -> foldl (\acc x -> acc ++ sep ++ x) (array.index a 0) (array.slice a 1 n)
-
-let split sep s : Char -> String -> List String =
-    let { parse, sep_by, take, token } = import! std.parser
-    unwrap_ok <| parse (sep_by (take (\c -> c /= sep)) (token sep)) s
-
-let uniq a : [Ord o] -> List o -> List o =
-    (foldr (\x acc ->
-            let { out, last } = acc
-            if last == Some x then
-                { out, last }
-            else
-                { out = Cons x out, last = Some x })
-        { out = Nil, last = None }
-        (list.sort a)).out
-
-let set_diff a b : [Ord o] -> List o -> List o -> { x: List o, y: List o } =
-    let _set_diff a b xout yout =
-        match a with
-        | Nil -> { x = xout, y = b <> yout }
-        | Cons x xs ->
-            match b with
-            | Nil -> { x = a <> xout, y = yout }
-            | Cons y ys ->
-                if x == y then
-                    _set_diff xs ys xout yout
-                else
-                    _set_diff xs ys (Cons x xout) (Cons y yout)
-    _set_diff (uniq a) (uniq b) Nil Nil
-
-// Stateful utility functions (calls some form of API)
-let time_from state : String -> Option Duration =
-    let filter = insert "type" (String "state.change.add") <| singleton "attrs.add" (String state)
-    let last_log = sched.log.find filter (Some 1)
-    if array.len last_log == 0 then
-        None
-    else
-        Some <| time.sub (time.local_now ()) <| (array.index last_log 0).time
-
 let notify body : String -> IO () =
-    seq proc "notify-send" ["Sched", body] |> execute
-    io.wrap ()
+    seq execute (proc "notify-send" ["Sched", body])
+    wrap ()
 
-// Handlers
-sched.handle "state.stat.length" (\l -> notify <| "\"" <> attr_as_str (unwrap (find "state" l.attrs)) <> "\"'ed for " <> show (attr_as_int (unwrap (find "length" l.attrs))) <> "secs")
+let naughty m: Map String Value -> IO () =
+    let m = map (\kv ->
+        let { key, value } = kv
+        let v = show value
+        key <> "=" <> v) (to_list m)
+    seq proc "awesome-client" ["naughty.notify({" <> (join "," m) <> "})"] |> execute
+    wrap ()
 
-// Commands
-command "new-log"
+seq cmd "log"
     "<type>     'Type for the log'
-     -d --desc=[desc]   	  'Optional description. Equivalent to --arg desc ...'
+     -d --desc=[desc]   	  'Optional description. Equivalent to -a desc ...'
      -a --attr [key] [val]... 'Optional attributes'"
     (\m ->
-        let typ = unwrap <| value_of m "type"
-        let attrs = arr_to_map <| values_of m "attr"
+        let typ = unwrap (value_of m "type")
+        let attrs = arr_to_map (values_of m "attr")
         let attrs =
             match value_of m "desc" with
             | Some d -> insert "desc" (String d) attrs
             | None -> attrs
-        let log = unwrap_ok <| sched.log.new typ attrs
-        seq io.println <| show <| log.id
-        io.wrap ())
+        let log = unwrap_ok (sched.log.new typ attrs)
+        seq println (show log.id)
+        wrap ())
 
-command "time-from"
-    "<state>    'Name for the state'"
+cmd "list"
+    "<type>     'Object/Logs to list'
+     [limit]    'Number of objects/logs to list. Default 10'"
     (\m ->
-        let state = value_of m "state" |> unwrap
-        match time_from state with
-        | Some dur -> io.println <| (show (duration.to_secs dur)) <> "secs"
-        | None -> io.eprintln <| "State 'add' event doesn't exist")
-
-command "state"
-    "[states]...  'States to set. Or empty to query current state'"
-    (\m ->
-        let obj = sched.obj.find (singleton "type" (String "state")) (Some 1)
-        let obj =
-            if array.len obj == 0 then
-                let obj = unwrap_ok <| sched.obj.new "state" "state" None
-                sched.obj.set_attr obj "state" (String "")
-                let obj = { attrs = insert "state" (String "") obj.attrs, .. obj }
-                obj
-            else
-                array.index obj 0
-        let states = values_of m "states"
-        if any (\e -> string.contains e ",") states then
-            io.eprintln "No comma allowed in arguments"
-        else
-            let old_states = attr_as_str <| unwrap <| find "state" obj.attrs
-            if array.len states == 0 then
-                io.println <| old_states
-            else
-                let diffs = set_diff (list.of states) (split ',' old_states)
-                seq io.println <| show diffs.x <> show diffs.y
-                for diffs.x (\new ->
-                    sched.log.new "state.change.add" <| singleton "add" (String new)
-                    io.println "  added")
-                seq io.println "added"
-                for diffs.y (\rem ->
-                    sched.log.new "state.change.rem" <| singleton "rem" (String rem)
-                    let now = time.local_now ()
-                    do diff = map duration.to_secs <| time_from rem
-                    to_option <| sched.log.new "state.stat.length" <| insert "length" (Int diff) <| singleton "state" (String rem))
-                seq io.println "remed"
-                sched.obj.set_attr obj "state" (String (join states ","))
-                io.println "asdf")
+        let s =
+            match unwrap <| value_of m "type" with 
+            | "log" -> show <| sched.log.find (\l -> True) (Some 10)
+            | "obj" -> show <| sched.obj.find (\o -> True) (Some 10)
+            | _ -> "else"
+        println s)

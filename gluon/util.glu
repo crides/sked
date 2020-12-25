@@ -1,40 +1,36 @@
 let { ? } = import! std.string
-let { DateTime, ? } = (import! time).time
+let { datetime, duration, ? } = import! time
+let { DateTime, ? } = datetime
 let { Map } = import! std.map
-let attr @ { AttrValue, ? } = import! attr
 let { (<>) } = import! std.semigroup
+let { Value } = import! std.json
+let { to_string_pretty, ? } = import! std.json.ser
+let { unwrap_ok } = import! std.result
 
-let map_show ?a ?b : [Show k] -> [Show v] -> Show (Map k v) = {
+let show_value : Show Value = {
+    show = \v -> unwrap_ok (to_string_pretty v)
+}
+
+let { ? } = { show = show_value }
+
+let show_map ?a ?b : [Show k] -> [Show v] -> Show (Map k v) = {
     show = \m ->
         rec let show_elems m =
             match m with
             | Tip -> ""
             | Bin k v left Tip -> show_elems left <> a.show k <> ": " <> b.show v
-            | Bin k v left right -> show_elems left <> a.show k <> ": " <> b.show v <> ", " <> show_elems right
+            | Bin k v left right ->
+                show_elems left <> a.show k <> ": " <> b.show v <> ", " <> show_elems right
         "{" <> show_elems m <> "}",
 }
 
-let { ? } = { show = map_show }
+let { ? } = { show = show_map }
 
 #[derive(Show)]
-type Log = {
-    id: Int,
-    typ: String,
-    time: DateTime,
-    attrs: Map String AttrValue,
-}
+type Log = { id : Int, typ : String, time : DateTime, attrs : Map String Value }
 
 #[derive(Show)]
-type Object = {
-    id: Int,
-    name: String,
-    typ: String,
-    desc: Option String,
-    deps: Array Int,
-    subs: Array Int,
-    refs: Array Int,
-    attrs: Map String AttrValue,
-}
+type Object = { id : Int, name : String, typ : String, desc : String, attrs : Map String Value }
 
 {
     log = {
@@ -43,14 +39,14 @@ type Object = {
     },
     map = {
         Map,
-        show = map_show,
+        show = show_map,
     },
     obj = {
         Object,
         show = show_Object,
     },
-    attr = {
-        AttrValue,
-        show = attr.show,
+    json = {
+        Value,
+        show = show_value,
     },
 }

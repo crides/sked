@@ -27,7 +27,7 @@ thread_local! {
     static CMDS: Mutex<(Option<App<'static, 'static>>, HashMap<String, CommandHandler>)> = Mutex::new((Some(App::new("cmd")), HashMap::new()));
 }
 
-fn command(name: String, usage: String, handler: CommandHandler) {
+fn cmd(name: String, usage: String, handler: CommandHandler) -> IO<()> {
     let sub = App::new(name.clone()).args_from_usage(Box::leak(Box::new(usage)));
     CMDS.with(|c| {
         let mut cmds = c.lock().unwrap();
@@ -35,6 +35,7 @@ fn command(name: String, usage: String, handler: CommandHandler) {
         cmds.0 = Some(app.subcommand(sub));
         cmds.1.insert(name, handler);
     });
+    IO::Value(())
 }
 
 pub fn cmd_repl() -> bool {
@@ -114,7 +115,7 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
     ExternModule::new(
         thread,
         record! {
-            command => primitive!(3, command),
+            cmd => primitive!(3, cmd),
             value_of => primitive!(2, value_of),
             values_of => primitive!(2, values_of),
         },

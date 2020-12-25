@@ -1,18 +1,12 @@
-use std::fmt;
-
-use chrono::{FixedOffset, Local, Offset, Timelike, Utc};
+use chrono::{FixedOffset, Local, Offset, Utc};
 use gluon::{
     vm::{api::Getable, ExternModule, Result as GluonResult, Variants},
     Thread,
 };
 use gluon_codegen::*;
-use serde::{
-    de::{self, MapAccess, Visitor},
-    ser::SerializeMap,
-    Deserialize, Deserializer, Serialize, Serializer,
-};
+use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
-#[derive(Clone, Copy, Debug, Userdata, Trace, VmType)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Trace, VmType, Userdata)]
 #[gluon_userdata(clone)]
 #[gluon(vm_type = "time.DateTime")]
 #[gluon_trace(skip)]
@@ -31,64 +25,41 @@ impl<'vm, 'value> Getable<'vm, 'value> for DateTime {
     }
 }
 
-impl Serialize for DateTime {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut map = serializer.serialize_map(Some(1))?;
-        map.serialize_entry("$date", &self.0.to_rfc3339())?;
-        map.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for DateTime {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        enum Field {
-            #[serde(rename = "$date")]
-            Date,
-        };
-
-        struct DateTimeVisitor;
-
-        impl<'de> Visitor<'de> for DateTimeVisitor {
-            type Value = DateTime;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("struct DateTime")
-            }
-
-            fn visit_map<V: MapAccess<'de>>(self, mut map: V) -> Result<DateTime, V::Error> {
-                let mut date = None;
-                while let Some(Field::Date) = map.next_key()? {
-                    if date.is_some() {
-                        return Err(de::Error::duplicate_field("$date"));
-                    }
-                    let s: String = map.next_value()?;
-                    date = Some(DateTime(
-                        chrono::DateTime::<chrono::FixedOffset>::parse_from_rfc3339(&s).unwrap(),
-                    ))
-                }
-                date.ok_or_else(|| de::Error::missing_field("$date"))
-            }
-        }
-
-        deserializer.deserialize_map(DateTimeVisitor)
-    }
-}
-
 impl From<chrono::DateTime<Utc>> for DateTime {
     fn from(t: chrono::DateTime<Utc>) -> DateTime {
         DateTime(t.into())
     }
 }
 
-impl DateTime {
-    pub fn to_utc(self) -> chrono::DateTime<Utc> {
-        self.0.into()
+// We only care about seconds, so we can just discard the nanos
+impl Serialize for DateTime {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let utc_time: chrono::DateTime<Utc> = self.0.into();
+        serializer.serialize_i64(utc_time.timestamp())
     }
+}
 
+impl<'de> Deserialize<'de> for DateTime {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct DateTimeVisitor;
+        use std::fmt;
+        impl<'de> de::Visitor<'de> for DateTimeVisitor {
+            type Value = DateTime;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("int DateTime")
+            }
+
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                use chrono::prelude::TimeZone;
+                Ok(DateTime(Utc.timestamp(value as i64, 0).into()))
+            }
+        }
+        deserializer.deserialize_u64(DateTimeVisitor)
+    }
+}
+
+impl DateTime {
     fn format(&self, format: &str) -> String {
         self.0.format(format).to_string()
     }
@@ -129,38 +100,15 @@ impl DateTime {
 
 #[derive(Clone, Copy, Debug, Userdata, Trace, VmType)]
 #[gluon_userdata(clone)]
-#[gluon(vm_type = "time.Time")]
-#[gluon_trace(skip)]
-pub struct Time(chrono::NaiveTime);
-
-impl<'vm, 'value> Getable<'vm, 'value> for Time {
-    type Proxy = Variants<'value>;
-    fn to_proxy(_vm: &'vm Thread, value: Variants<'value>) -> GluonResult<Self::Proxy> {
-        Ok(value)
-    }
-    fn from_proxy(vm: &'vm Thread, proxy: &'value mut Self::Proxy) -> Self {
-        <Self as Getable<'vm, 'value>>::from_value(vm, proxy.clone())
-    }
-    fn from_value(vm: &'vm Thread, value: Variants<'value>) -> Self {
-        *<&'value Time as Getable<'vm, 'value>>::from_value(vm, value)
-    }
-}
-
-impl Time {
-    pub fn to_secs(self) -> u32 {
-        self.0.num_seconds_from_midnight()
-    }
-
-    pub fn from_secs(secs: u32) -> Self {
-        Time(chrono::NaiveTime::from_num_seconds_from_midnight(secs, 0))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Userdata, Trace, VmType)]
-#[gluon_userdata(clone)]
 #[gluon(vm_type = "time.Duration")]
 #[gluon_trace(skip)]
 pub struct Duration(pub chrono::Duration);
+
+impl From<chrono::Duration> for Duration {
+    fn from(d: chrono::Duration) -> Duration {
+        Duration(d)
+    }
+}
 
 impl<'vm, 'value> Getable<'vm, 'value> for Duration {
     type Proxy = Variants<'value>;
@@ -172,6 +120,32 @@ impl<'vm, 'value> Getable<'vm, 'value> for Duration {
     }
     fn from_value(vm: &'vm Thread, value: Variants<'value>) -> Self {
         *<&'value Duration as Getable<'vm, 'value>>::from_value(vm, value)
+    }
+}
+
+// We only care about seconds, so we can just discard the nanos
+impl Serialize for Duration {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_i64(self.0.num_seconds())
+    }
+}
+
+impl<'de> Deserialize<'de> for Duration {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct DurationVisitor;
+        use std::fmt;
+        impl<'de> de::Visitor<'de> for DurationVisitor {
+            type Value = Duration;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("Duration")
+            }
+
+            fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(Duration(chrono::Duration::seconds(value)))
+            }
+        }
+        deserializer.deserialize_i64(DurationVisitor)
     }
 }
 
@@ -254,7 +228,6 @@ impl TimeZone {
 
 pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
     thread.register_type::<DateTime>("time.DateTime", &[])?;
-    thread.register_type::<Time>("time.Time", &[])?;
     thread.register_type::<Duration>("time.Duration", &[])?;
     thread.register_type::<TimeZone>("time.TimeZone", &[])?;
     ExternModule::new(
@@ -267,7 +240,7 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
                 east => primitive!(1, TimeZone::east),
                 west => primitive!(1, TimeZone::west),
             },
-            time => record! {
+            datetime => record! {
                 type DateTime => DateTime,
                 format => primitive!(2, DateTime::format),
                 with_timezone => primitive!(2, DateTime::with_timezone),

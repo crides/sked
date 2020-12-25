@@ -9,7 +9,6 @@ mod repl;
 mod script;
 mod signal;
 mod storage;
-mod task;
 mod util;
 
 use std::fs;
@@ -27,6 +26,7 @@ fn main() {
     let vm = script::get_vm(config_dir);
     if let Err(e) = script::run_user(&vm, &init_file) {
         print_gluon_err(e);
+        return;
     }
     if script::cmd::cmd_repl() {
         let res = repl::run(&vm, "> ");

@@ -17,7 +17,12 @@ pub fn get_vm(config_dir: PathBuf) -> RootedThread {
     vm.run_io(true);
     add_extern_module(&vm, "time.prim", time::load);
     add_extern_module(&vm, "cmd", cmd::load);
-    add_extern_module_with_deps(&vm, "sched", sched::load, vec!["std.map".into(), "time.prim".into()]);
+    add_extern_module_with_deps(
+        &vm,
+        "sched",
+        sched::load,
+        vec!["std.map".into(), "time.prim".into(), "std.json".into()],
+    );
     vm
 }
 

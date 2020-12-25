@@ -1,7 +1,7 @@
 let { Eq, Ord, Ordering } = import! std.cmp
-let { duration, time, timezone } = import! time.prim
+let { duration, datetime, timezone } = import! time.prim
 let { Duration } = duration
-let { DateTime } = time
+let { DateTime } = datetime
 let { TimeZone } = timezone
 
 let duration_eq : Eq Duration = { (==) = duration.eq }
@@ -15,29 +15,34 @@ let duration_ord : Ord Duration =
             GT
     { eq = duration_eq, compare }
 
-let time_eq : Eq DateTime = { (==) = time.eq }
+let time_eq : Eq DateTime = { (==) = datetime.eq }
 let time_ord : Ord DateTime =
     let compare a b =
-        if time.eq a b then
+        if datetime.eq a b then
             EQ
-        else if time.lt a b then
+        else if datetime.lt a b then
             LT
         else
             GT
     { eq = time_eq, compare }
-let time_show : Show DateTime = {
-    show = \t -> time.format t "%Y.%m.%d..%H.%M.%S"
+let datetime_show : Show DateTime = {
+    show = \t -> datetime.format t "%Y.%m.%d..%H.%M.%S"
+}
+
+let dur_show : Show Duration = {
+    show = \d -> duration.show d
 }
 
 {
     duration = {
         Duration,
+        show = dur_show,
         .. duration
     },
-    time = {
+    datetime = {
         DateTime,
-        show = time_show,
-        .. time
+        show = datetime_show,
+        .. datetime
     },
     timezone = {
         TimeZone,

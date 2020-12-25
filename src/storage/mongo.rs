@@ -5,27 +5,20 @@ use mongodb::{
     sync::{Client, Collection},
 };
 
-use crate::script::sched::{Attr, AttrValue, Log, Object};
-use crate::signal::{SignalHandler, SignalHandlers};
-
-#[derive(Clone, Debug, Trace, VmType, Pushable, Getable)]
-#[gluon_trace(skip)]
-pub enum Error {
-    Deadlock,
-    Regex(String),
-    InvalidKey(String),
-    InvalidLogID(i32),
-    InvalidObjID(i32),
-    ObjNotTask(i32),
-    ObjNotEvent(i32),
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
+use crate::{
+    script::{
+        sched::{Attr, AttrValue, Log, Object},
+        task::{Event, Every, Stop, Task},
+        time::{DateTime, Duration, Time},
+    },
+    signal::{SignalHandler, SignalHandlers},
+    storage::{Error, Result},
+};
 
 pub struct Storage {
     ids: Collection,
     logs: Collection,
-    pub(crate) objs: Collection,
+    objs: Collection,
     handlers: SignalHandlers,
 }
 
@@ -67,13 +60,13 @@ impl Storage {
         if attrs.len() > 0 {
             self.logs
                 .insert_one(
-                    doc! { "_id": id, "type": typ, "time": time, "attrs": attrs.clone() },
+                    doc! { "_id": id, "typ": typ, "time": time, "attrs": attrs.clone() },
                     None,
                 )
                 .unwrap();
         } else {
             self.logs
-                .insert_one(doc! { "_id": id, "type": typ, "time": time }, None)
+                .insert_one(doc! { "_id": id, "typ": typ, "time": time }, None)
                 .unwrap();
         }
 
@@ -93,13 +86,13 @@ impl Storage {
         if attrs.0.len() > 0 {
             self.logs
                 .insert_one(
-                    doc! { "_id": id, "type": typ, "time": time, "attrs": to_bson(&attrs).unwrap() },
+                    doc! { "_id": id, "typ": typ, "time": time, "attrs": to_bson(&attrs).unwrap() },
                     None,
                 )
                 .unwrap();
         } else {
             self.logs
-                .insert_one(doc! { "_id": id, "type": typ, "time": time }, None)
+                .insert_one(doc! { "_id": id, "typ": typ, "time": time }, None)
                 .unwrap();
         }
 
@@ -162,7 +155,7 @@ impl Storage {
     pub fn create_obj(&mut self, name: &str, typ: &str) -> Result<i32> {
         let id = self.get_obj_id();
         self.objs
-            .insert_one(doc! { "_id": id, "name": name, "type": typ }, None)
+            .insert_one(doc! { "_id": id, "name": name, "typ": typ }, None)
             .unwrap();
         self.create_log("obj.create", doc! { "id": id })?;
         Ok(id)
@@ -184,30 +177,6 @@ impl Storage {
             _ => unreachable!(),
         };
         self.create_log("obj.set_desc", attrs)?;
-        Ok(())
-    }
-
-    pub fn obj_add_dep(&mut self, id: i32, dep: i32) -> Result<()> {
-        self.objs
-            .find_one_and_update(doc! { "_id": id }, doc! { "$addToSet": { "deps": dep } }, None)
-            .unwrap();
-        self.create_log("obj.add_dep", doc! { "id": id, "dep": dep })?;
-        Ok(())
-    }
-
-    pub fn obj_add_sub(&mut self, id: i32, sub: i32) -> Result<()> {
-        self.objs
-            .find_one_and_update(doc! { "_id": id }, doc! { "$addToSet": { "subs": sub } }, None)
-            .unwrap();
-        self.create_log("obj.add_sub", doc! { "sub": sub, "id": id })?;
-        Ok(())
-    }
-
-    pub fn obj_add_ref(&mut self, id: i32, rf: i32) -> Result<()> {
-        self.objs
-            .find_one_and_update(doc! { "_id": id }, doc! { "$addToSet": { "refs": rf } }, None)
-            .unwrap();
-        self.create_log("obj.add_ref", doc! { "ref": rf, "id": id })?;
         Ok(())
     }
 
@@ -235,30 +204,6 @@ impl Storage {
             _ => unreachable!(),
         };
         self.create_log("obj.set_attr", attrs)?;
-        Ok(())
-    }
-
-    pub fn obj_del_dep(&mut self, id: i32, dep: i32) -> Result<()> {
-        self.objs
-            .find_one_and_update(doc! { "_id": id }, doc! { "$pull": { "deps": dep } }, None)
-            .unwrap();
-        self.create_log("obj.del_dep", doc! { "dep": dep, "id": id })?;
-        Ok(())
-    }
-
-    pub fn obj_del_sub(&mut self, id: i32, sub: i32) -> Result<()> {
-        self.objs
-            .find_one_and_update(doc! { "_id": id }, doc! { "$pull": { "subs": sub } }, None)
-            .unwrap();
-        self.create_log("obj.del_sub", doc! { "sub": sub, "id": id })?;
-        Ok(())
-    }
-
-    pub fn obj_del_ref(&mut self, id: i32, rf: i32) -> Result<()> {
-        self.objs
-            .find_one_and_update(doc! { "_id": id }, doc! { "$pull": { "refs": rf } }, None)
-            .unwrap();
-        self.create_log("obj.del_ref", doc! { "ref": rf, "id": id })?;
         Ok(())
     }
 
@@ -303,5 +248,91 @@ impl Storage {
             .take(limit.unwrap_or(std::usize::MAX))
             .map(|o| from_bson(Bson::Document(o.unwrap())).unwrap())
             .collect()
+    }
+
+    pub fn create_task(
+        &mut self,
+        name: &str,
+        start: DateTime,
+        every: Every,
+        stop: Stop,
+        deadline: Time,
+        priority: u32,
+    ) -> Result<i32> {
+        let id = self.get_obj_id();
+        let start = DateTime(start.0.date().and_hms(0, 0, 0));
+        self.objs
+            .insert_one(doc! { "_id": id, "name": name, "typ": "task", "start": start.to_utc(), "every": every.to_doc(), "stop": stop.to_doc(), "deadline": deadline.to_secs(), "priority": priority }, None)
+            .unwrap();
+        self.create_log("task.create", doc! { "id": id })?;
+        Ok(id)
+    }
+
+    pub fn get_task(&mut self, id: i32) -> Result<Task> {
+        let task = self
+            .objs
+            .find_one(doc! { "_id": id }, None)
+            .unwrap()
+            .ok_or_else(|| Error::InvalidObjID(id))?;
+        if task.get_str("typ") != Ok("task") {
+            return Err(Error::ObjNotTask(id));
+        }
+        let start = task.get_datetime("start").unwrap().clone().into();
+        let every = Every::from_doc(task.get_document("every").unwrap().clone());
+        let stop = Stop::from_doc(task.get_document("stop").unwrap().clone());
+        let deadline = Time::from_secs(task.get_i32("deadline").unwrap() as u32).unwrap();
+        let priority = task.get_i32("priority").unwrap() as u32;
+        let object = from_bson(Bson::Document(task)).unwrap();
+        Ok(Task {
+            start,
+            every,
+            stop,
+            deadline,
+            object,
+            priority,
+        })
+    }
+
+    pub fn create_event(
+        &mut self,
+        name: &str,
+        start: DateTime,
+        every: Every,
+        stop: Stop,
+        event_start: Time,
+        duration: Duration,
+    ) -> Result<i32> {
+        let id = self.get_obj_id();
+        let start = DateTime(start.0.date().and_hms(0, 0, 0));
+        self.objs
+            .insert_one(doc! { "_id": id, "name": name, "typ": "event", "start": start.to_utc(), "every": every.to_doc(), "stop": stop.to_doc(), "event_start": event_start.to_secs(), "duration": duration.num_seconds() }, None)
+            .unwrap();
+        self.create_log("event.create", doc! { "id": id })?;
+        Ok(id)
+    }
+
+    pub fn get_event(&mut self, id: i32) -> Result<Event> {
+        let task = self
+            .objs
+            .find_one(doc! { "_id": id }, None)
+            .unwrap()
+            .ok_or_else(|| Error::InvalidObjID(id))?;
+        if task.get_str("typ") != Ok("event") {
+            return Err(Error::ObjNotEvent(id));
+        }
+        let start = task.get_datetime("start").unwrap().clone().into();
+        let every = Every::from_doc(task.get_document("every").unwrap().clone());
+        let stop = Stop::from_doc(task.get_document("stop").unwrap().clone());
+        let event_start = Time::from_secs(task.get_i32("event_start").unwrap() as u32).unwrap();
+        let duration = Duration::seconds(task.get_i64("duration").unwrap());
+        let object = from_bson(Bson::Document(task)).unwrap();
+        Ok(Event {
+            start,
+            every,
+            stop,
+            event_start,
+            duration,
+            object,
+        })
     }
 }
