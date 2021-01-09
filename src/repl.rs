@@ -1,7 +1,8 @@
+extern crate gluon_completion as completion;
+
 use std::{borrow::Cow, error::Error as StdError, path::PathBuf, str::FromStr, sync::Mutex};
 
-use futures::{channel::oneshot, future, prelude::*};
-
+use futures::{Future, FutureExt};
 use gluon::base::{
     ast::{self, AstClone, Expr, Pattern, RootExpr, SpannedPattern, Typed, TypedIdent},
     error::InFile,
@@ -110,6 +111,39 @@ fn switch_debug_level(args: WithVM<&str>) -> IO<Result<String, String>> {
     IO::Value(Ok(vm.global_env().get_debug_level().to_string()))
 }
 
+fn complete(thread: &Thread, name: &str, fileinput: &str, pos: usize) -> GluonResult<Vec<String>> {
+    use gluon::compiler_pipeline::*;
+
+    let mut db = thread.get_database();
+    let mut module_compiler = thread.module_compiler(&mut db);
+
+    // The parser may find parse errors but still produce an expression
+    // For that case still typecheck the expression but return the parse error afterwards
+    let mut expr = match parse_expr(&mut module_compiler, thread.global_env().type_cache(), &name, fileinput) {
+        Ok(expr) => expr,
+        Err(err) => err.get_value()?,
+    };
+
+    // Only need the typechecker to fill infer the types as best it can regardless of errors
+    let _ = (&mut expr).typecheck(&mut module_compiler, thread, &name, fileinput);
+    let file_map = module_compiler
+        .get_filemap(&name)
+        .ok_or_else(|| VMError::from("FileMap is missing for completion".to_string()))?;
+    let suggestions = completion::suggest(
+        &thread.get_env(),
+        file_map.span(),
+        &expr.expr(),
+        file_map.span().start() + pos::ByteOffset::from(pos as i64),
+    );
+    Ok(suggestions
+        .into_iter()
+        .map(|ident| {
+            let s: &str = ident.name.as_ref();
+            s.to_string()
+        })
+        .collect())
+}
+
 struct Completer {
     thread: RootedThread,
     hinter: rustyline::hint::HistoryHinter,
@@ -143,14 +177,6 @@ impl rustyline::validate::Validator for Completer {
             Err((_, err)) if is_incomplete(&err) => Ok(rustyline::validate::ValidationResult::Incomplete),
             Ok(_) | Err(_) => Ok(rustyline::validate::ValidationResult::Valid(None)),
         }
-    }
-}
-
-impl rustyline::completion::Completer for Completer {
-    type Candidate = String;
-
-    fn complete(&self, _line: &str, _pos: usize, _: &rustyline::Context) -> rustyline::Result<(usize, Vec<String>)> {
-        Ok((0, Vec::new()))
     }
 }
 
@@ -188,6 +214,20 @@ impl rustyline::highlight::Highlighter for Completer {
 
     fn highlight_char(&self, line: &str, pos: usize) -> bool {
         self.highlighter.highlight_char(line, pos)
+    }
+}
+
+impl rustyline::completion::Completer for Completer {
+    type Candidate = String;
+
+    fn complete(&self, line: &str, pos: usize, _: &rustyline::Context) -> rustyline::Result<(usize, Vec<String>)> {
+        let result = complete(&self.thread, "<repl>", line, pos);
+
+        // Get the start of the completed identifier
+        let ident_start = line[..pos]
+            .rfind(|c: char| c.is_whitespace() || c == '.')
+            .map_or(0, |i| i + 1);
+        Ok((ident_start, result.unwrap_or(Vec::new())))
     }
 }
 
@@ -249,6 +289,7 @@ fn new_editor(vm: WithVM<()>) -> IO<Editor> {
     let mut editor = rustyline::Editor::new();
 
     let _ = app_dir_root().and_then(|path| Ok(editor.load_history(&*path.join("history"))?));
+
     editor.set_helper(Some(Completer {
         thread: vm.vm.root_thread(),
         hinter: rustyline::hint::HistoryHinter {},
@@ -472,49 +513,24 @@ fn set_globals(
 fn finish_or_interrupt(
     thread: RootedThread,
     action: OpaqueValue<&Thread, IO<Generic<A>>>,
-) -> impl Future<Output = IO<OpaqueValue<RootedThread, A>>> {
-    let (sender, receiver) = oneshot::channel();
-
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .unwrap_or_else(|err| panic!("Error installing signal handler: {}", err));
-        let _ = sender.send(());
-    });
-
+) -> IO<OpaqueValue<RootedThread, A>> {
     let mut action =
         OwnedFunction::<fn() -> IO<OpaqueValue<RootedThread, A>>>::from_value(&thread, action.get_variant());
-    let action_future = tokio::spawn(async move {
-        action
-            .call_async()
-            .await
-            .unwrap_or_else(|err| IO::Exception(err.to_string()))
-    })
-    .map(|r| r.unwrap());
-
-    let ctrl_c_future = receiver.map(move |next| {
-        next.unwrap();
-        thread.interrupt();
-        IO::Exception("Interrupted".to_string())
-    });
-
-    future::select(ctrl_c_future, action_future).map(|either| either.factor_first().0)
+    action.call().unwrap_or_else(|err| IO::Exception(err.to_string()))
 }
 
 fn save_history(editor: &Editor) -> IO<()> {
-    app_dir_root()
-        .and_then(|path| {
-            editor
-                .editor
-                .lock()
-                .unwrap()
-                .save_history(&*path.join("history"))
-                .map_err(|err| {
-                    let err: Box<dyn StdError> = Box::new(err);
-                    err
-                })
-        })
-        .unwrap();
+    let _ = app_dir_root().and_then(|path| {
+        editor
+            .editor
+            .lock()
+            .unwrap()
+            .save_history(&*path.join("history"))
+            .map_err(|err| {
+                let err: Box<dyn StdError> = Box::new(err);
+                err
+            })
+    });
     IO::Value(())
 }
 
@@ -547,7 +563,7 @@ fn load_repl(vm: &Thread) -> vm::Result<vm::ExternModule> {
             find_kind => primitive!(1, find_kind),
             switch_debug_level => primitive!(1, switch_debug_level),
             eval_line => primitive!(1, async fn eval_line),
-            finish_or_interrupt => primitive!(2, async fn finish_or_interrupt),
+            finish_or_interrupt => primitive!(2, finish_or_interrupt),
         ),
     )
 }
@@ -566,12 +582,109 @@ fn compile_repl(vm: &Thread) -> Result<(), GluonError> {
 }
 
 pub fn run(vm: &RootedThread, prompt: &str) -> gluon::Result<()> {
-    vm.get_database_mut().run_io(true);
-
     compile_repl(&vm)?;
 
     let mut repl: OwnedFunction<fn(_) -> _> = vm.get_global("repl")?;
     repl.call(Settings { prompt })
         .map(|_: IO<()>| ())
         .map_err(|err| err.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use gluon::import::Import;
+    use gluon::vm::api::{FunctionRef, IO};
+    use gluon::{self, RootedThread};
+
+    async fn new_vm() -> RootedThread {
+        if std::env::var("GLUON_PATH").is_err() {
+            std::env::set_var("GLUON_PATH", "..");
+        }
+        let vm = gluon::new_vm_async().await;
+        let import = vm.get_macros().get("import");
+        import
+            .as_ref()
+            .and_then(|import| import.downcast_ref::<Import>())
+            .expect("Import macro")
+            .add_path("..");
+        vm
+    }
+
+    #[tokio::test]
+    async fn compile_repl_test() {
+        let vm = new_vm().await;
+        compile_repl(&vm).await.unwrap_or_else(|err| panic!("{}", err));
+        let repl: Result<FunctionRef<fn(Settings<'static>) -> IO<()>>, _> = vm.get_global("repl");
+        assert!(repl.is_ok(), "{}", repl.err().unwrap());
+    }
+
+    #[tokio::test]
+    async fn record_patterns() {
+        let vm = new_vm().await;
+        compile_repl(&vm).await.unwrap_or_else(|err| panic!("{}", err));
+
+        // pattern with field names out of order
+        eval_line_(vm.clone(), r#"let {y, x} = {x = "x", y = "y"}"#)
+            .await
+            .expect("Error evaluating let binding");
+        let x: String = vm.get_global("x").expect("Error getting x");
+        assert_eq!(x, "x");
+        let y: String = vm.get_global("y").expect("Error getting y");
+        assert_eq!(y, "y");
+
+        // pattern with field names out of order and different field types
+        eval_line_(vm.clone(), r#"let {y} = {x = "x", y = ()}"#)
+            .await
+            .expect("Error evaluating let binding 2");
+        let () = vm.get_global("y").expect("Error getting y");
+    }
+
+    type QueryFn = fn(&'static str) -> IO<Result<String, String>>;
+
+    #[tokio::test]
+    async fn type_of_expr() {
+        let vm = new_vm().await;
+        compile_repl(&vm).await.unwrap_or_else(|err| panic!("{}", err));
+        let mut type_of: FunctionRef<QueryFn> = vm.get_global("repl.prim.type_of_expr").unwrap();
+        assert_eq!(type_of.call_async("123").await, Ok(IO::Value(Ok("Int".into()))));
+    }
+
+    #[tokio::test]
+    async fn find_kind() {
+        let vm = new_vm().await;
+        compile_repl(&vm).await.unwrap_or_else(|err| panic!("{}", err));
+        let mut find_kind: FunctionRef<QueryFn> = vm.get_global("repl.prim.find_kind").unwrap();
+        assert_eq!(
+            find_kind.call_async("std.prelude.Semigroup").await,
+            Ok(IO::Value(Ok("Type -> Type".into())))
+        );
+    }
+
+    #[tokio::test]
+    async fn find_info() {
+        let vm = new_vm().await;
+        compile_repl(&vm).await.unwrap_or_else(|err| panic!("{}", err));
+        let mut find_info: FunctionRef<QueryFn> = vm.get_global("repl.prim.find_info").unwrap();
+        match find_info.call_async("std.prelude.Semigroup").await {
+            Ok(IO::Value(Ok(_))) => (),
+            x => assert!(false, "{:?}", x),
+        }
+        match find_info.call_async("std.prelude.empty").await {
+            Ok(IO::Value(Ok(_))) => (),
+            x => assert!(false, "{:?}", x),
+        }
+        match find_info.call_async("std.float.prim").await {
+            Ok(IO::Value(Ok(_))) => (),
+            x => assert!(false, "{:?}", x),
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_repl_empty() {
+        let vm = new_vm().await;
+        compile_repl(&vm).await.unwrap_or_else(|err| panic!("{}", err));
+        complete(&vm, "<repl>", "", 0).unwrap_or_else(|err| panic!("{}", err));
+    }
 }
