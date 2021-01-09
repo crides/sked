@@ -1,12 +1,6 @@
-#[cfg(feature = "kv")]
 mod kv;
-#[cfg(feature = "mongo")]
-mod mongo;
 
-#[cfg(feature = "kv")]
 pub use kv::*;
-#[cfg(feature = "mongo")]
-pub use mongo::*;
 
 use chrono::Datelike;
 
