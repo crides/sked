@@ -1,4 +1,4 @@
-use chrono::{FixedOffset, Local, Offset, Utc};
+use chrono::{Datelike, FixedOffset, Local, Offset, TimeZone as _, Timelike, Utc};
 use gluon::{
     vm::{api::Getable, ExternModule, Result as GluonResult, Variants},
     Thread,
@@ -31,6 +31,12 @@ impl From<chrono::DateTime<Utc>> for DateTime {
     }
 }
 
+impl From<chrono::DateTime<Local>> for DateTime {
+    fn from(t: chrono::DateTime<Local>) -> DateTime {
+        DateTime(t.into())
+    }
+}
+
 // We only care about seconds, so we can just discard the nanos
 impl Serialize for DateTime {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -51,7 +57,6 @@ impl<'de> Deserialize<'de> for DateTime {
             }
 
             fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
-                use chrono::prelude::TimeZone;
                 Ok(DateTime(Utc.timestamp(value as i64, 0).into()))
             }
         }
@@ -59,8 +64,47 @@ impl<'de> Deserialize<'de> for DateTime {
     }
 }
 
+macro_rules! datetime_getter {
+    ($($name:ident -> $typ:ty),+) => {
+        $(fn $name(&self) -> $typ {
+            self.0.$name()
+        })+
+    }
+}
+
+macro_rules! datetime_setter {
+    ($($name:ident($($arg:ident: $arg_ty:ty),*)),+) => {
+        $(fn $name(&self, $($arg: $arg_ty),*) -> Option<DateTime> {
+            self.0.$name($($arg),*).map(|d| DateTime(d))
+        })+
+    }
+}
+
 impl DateTime {
-    fn format(&self, format: &str) -> String {
+    fn new(y: i32, m: u32, d: u32, h: u32, mi: u32, s: u32) -> Option<DateTime> {
+        Utc.ymd_opt(y, m, d)
+            .single()
+            .map(|d| d.and_hms_opt(h, mi, s))
+            .flatten()
+            .map(|dt| DateTime(dt.into()))
+    }
+
+    fn from_timestamp(t: i64) -> DateTime {
+        Utc.timestamp(t, 0).into()
+    }
+
+    datetime_getter!(year -> i32, month -> u32, day -> u32, hour -> u32, minute -> u32, second -> u32);
+
+    datetime_setter!(
+        with_year(y: i32),
+        with_month(m: u32),
+        with_day(d: u32),
+        with_hour(h: u32),
+        with_minute(m: u32),
+        with_second(s: u32)
+    );
+
+    pub fn format(&self, format: &str) -> String {
         self.0.format(format).to_string()
     }
 
@@ -141,11 +185,11 @@ impl<'de> Deserialize<'de> for Duration {
                 formatter.write_str("Duration")
             }
 
-            fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
-                Ok(Duration(chrono::Duration::seconds(value)))
+            fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(Duration(chrono::Duration::seconds(value as i64)))
             }
         }
-        deserializer.deserialize_i64(DurationVisitor)
+        deserializer.deserialize_u64(DurationVisitor)
     }
 }
 
@@ -235,13 +279,28 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
         record! {
             timezone => record! {
                 type TimeZone => TimeZone,
-                Utc => TimeZone(Utc.fix()),
-                Local => TimeZone(*Local::now().offset()),
+                utc => TimeZone(Utc.fix()),
+                local => TimeZone(*Local::now().offset()),
                 east => primitive!(1, TimeZone::east),
                 west => primitive!(1, TimeZone::west),
             },
             datetime => record! {
                 type DateTime => DateTime,
+                new => primitive!(6, DateTime::new),
+                from_timestamp => primitive!(1, DateTime::from_timestamp),
+                year => primitive!(1, DateTime::year),
+                month => primitive!(1, DateTime::month),
+                day => primitive!(1, DateTime::day),
+                hour => primitive!(1, DateTime::hour),
+                minute => primitive!(1, DateTime::minute),
+                second => primitive!(1, DateTime::second),
+                with_year => primitive!(2, DateTime::with_year),
+                with_month => primitive!(2, DateTime::with_month),
+                with_day => primitive!(2, DateTime::with_day),
+                with_hour => primitive!(2, DateTime::with_hour),
+                with_minute => primitive!(2, DateTime::with_minute),
+                with_second => primitive!(2, DateTime::with_second),
+
                 format => primitive!(2, DateTime::format),
                 with_timezone => primitive!(2, DateTime::with_timezone),
                 to_local => primitive!(1, DateTime::to_local),

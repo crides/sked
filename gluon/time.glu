@@ -1,5 +1,5 @@
 let { Eq, Ord, Ordering } = import! std.cmp
-let { duration, datetime, timezone } = import! time.prim
+let { duration, datetime, timezone } = import! sched.time.prim
 let { Duration } = duration
 let { DateTime } = datetime
 let { TimeZone } = timezone
@@ -33,6 +33,48 @@ let dur_show : Show Duration = {
     show = \d -> duration.show d
 }
 
+let { map } = import! std.functor
+let parser @ {
+    Parser,
+    token,
+    recognize,
+    take1,
+    skip_many1,
+    digit,
+    parse_full,
+    ?
+} = import! std.parser
+let int = import! std.int
+let io @ { ? } = import! std.io
+let { Result, ? } = import! std.result
+let { wrap } = import! std.applicative
+let { flat_map } = import! std.monad
+
+// Parse datetime with the form of 'Y-M-D h:m:s'
+let parse_time s : String -> Result String DateTime =
+    let time_parser : Parser DateTime =
+        let integer : Parser Int = 
+            let parse_int s = 
+                match int.parse s with 
+                | Ok x -> wrap x
+                | Err _ -> parser.fail "int"
+            flat_map parse_int (recognize (skip_many1 digit))
+        do year = integer
+        seq token '-'
+        do month = integer
+        seq token '-'
+        do day = integer
+        seq token ' '
+        do hour = integer
+        seq token ':'
+        do minute = integer
+        seq token ':'
+        do second = integer
+        match datetime.new year month day hour minute second with
+        | Some dt -> wrap dt
+        | None -> parser.fail "Invalid date"
+    parse_full time_parser s
+
 {
     duration = {
         Duration,
@@ -42,6 +84,7 @@ let dur_show : Show Duration = {
     datetime = {
         DateTime,
         show = datetime_show,
+        parse = parse_time,
         .. datetime
     },
     timezone = {

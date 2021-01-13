@@ -1,71 +1,167 @@
-let { to_list, singleton, find, insert, ? } = import! std.map
-let array @ { Array, ? } = import! std.array
-let list @ { List, ? } = import! std.list
-let { println, eprintln, ? } = import! std.io
-let string = import! std.string
-let { proc, execute } = import! std.process
-let { Result, unwrap_ok, to_option, ? } = import! std.result
-let sched = import! sched
-let { log = { Log, ? }, map = { Map, ? }, obj = { Object, ? }, json = { Value, ? }, ? } = import! util
-let { datetime, duration, ? } = import! time
-let { DateTime, ? } = datetime
-let { Duration, ? } = duration
-let { (<|), (|>) } = import! std.function
-let { (<>) } = import! std.semigroup
-let { (>>=) } = import! std.monad
-let { empty } = import! std.monoid
+let {
+    datetime = datetime @ { DateTime, ? },
+    duration = duration @ { Duration, ? },
+    timezone,
+} = import! time
+let { read_line, println, print, eprintln, throw, flush_stdout, ? } = import! std.io
+let { cmd, value_of, values_of } = import! sched.cmd.prim
 let { map } = import! std.functor
-let { cmd, value_of, values_of } = import! cmd
-let { unwrap, unwrap_or } = import! std.option
-let { Foldable, any, all, foldl, foldr } = import! std.foldable
+let string @ { trim } = import! std.string
+let { (>>=) } = import! std.monad
+let { (<>) } = import! std.semigroup
+let sched @ { Repeated, Error } = import! sched.base.prim
+let int = import! std.int
+let { Result, unwrap_ok } = import! std.result
+let { unwrap } = import! std.option
+let { log = { Log, ? }, map = { Map, ? }, obj = { Object, ? }, json = { Value, ? },
+    join,
+    split,
+    arr_to_map,
+} = import! util
+let { wrap } = import! std.applicative
+let { (<|), (|>), flip } = import! std.function
+let { min, max } = import! std.cmp
+let ser @ { ? } = import! std.json.ser
+let de @ { ? } = import! std.json.de
+let std_map = import! std.map
+let stream @ { ? } = import! std.stream
 let { for } = import! std.traversable
-let { ? } = import! std.char
-let { (<*), (*>), wrap } = import! std.applicative
-let { to_string, ? } = import! std.json.ser
+let { foldl } = import! std.foldable
+let list @ { List, ? } = import! std.list
+let tui = import! sched.tui
+let { print_list } = import! list
 
-// Pure utility functions
-let arr_to_map a : Array String -> Map String Value =
-    (foldl (\mk x ->
-            let { m, k } = mk
-            match k with
-            | Some key -> { m = insert key (String x) m, k = None }
-            | None -> { m, k = Some x })
-        { m = empty, k = None } a).m
+type Stop = 
+    | Nonstop
+    | Stopped
+    | Count Int
+    | After DateTime
 
-let notify body : String -> IO () =
-    seq execute (proc "notify-send" ["Sched", body])
-    wrap ()
+type Every =
+    | Time Duration
+    | Month Int
 
-let naughty m: Map String Value -> IO () =
-    let m = map (\kv ->
-        let { key, value } = kv
-        let v = show value
-        key <> "=" <> v) (to_list m)
-    seq proc "awesome-client" ["naughty.notify({" <> (join "," m) <> "})"] |> execute
-    wrap ()
+type OptRepeated =
+    | Single DateTime
+    | Repeat Repeated
+
+seq cmd "list"
+    "<type>     'Object/Logs to list'
+     [limit]    'Number of objects/logs to list. Default 10'"
+    (\m ->
+        match unwrap <| value_of m "type" with 
+        | "log" ->
+            let logs = unwrap_ok <| sched.log.find (\l -> True) (Some 10)
+            let logs = flip map (list.of logs) (\l ->
+                [
+                    (tui.fg tui.green <> tui.bold, False, Cons (show l.id) Nil),
+                    ("", True, Cons l.typ Nil),
+                    ("", True, Cons (show (datetime.with_timezone l.time timezone.local)) Nil),
+                    (tui.fg tui.blue, True, map (\p -> p.key <> ": " <> unwrap_ok (ser.to_string p.value)) (std_map.to_list l.attrs)),
+                ])
+            print_list (tui.fg tui.white <> tui.bold) ["id", "type", "time", "attrs"] logs
+
+        | "obj" ->
+            let objs = unwrap_ok <| sched.obj.find (\o -> True) (Some 10)
+            let objs = flip map (list.of objs) (\o ->
+                [
+                    (tui.fg tui.green <> tui.bold, False, Cons (show o.id) Nil),
+                    ("", True, Cons o.name Nil),
+                    ("", True, Cons o.typ Nil),
+                    (tui.fg tui.blue, True, map (\p -> p.key <> ": " <> unwrap_ok (ser.to_string p.value)) (std_map.to_list o.attrs)),
+                ])
+            print_list (tui.fg tui.white <> tui.bold) ["id", "name", "type", "attrs"] objs
+        | "task" ->
+            let tasks = unwrap_ok <| sched.obj.find (\t -> t.typ == "task") (Some 10)
+            let tasks = flip map (list.of tasks) (\t ->
+                let task = unwrap_ok <| sched.task.get t.id
+                let current = unwrap_ok <| sched.task.find_current t.id
+                let (current, deadline) =
+                    match current with
+                    | Some c ->
+                        let log = unwrap_ok <| sched.log.get c
+                        let raw = unwrap <| std_map.find "deadline" log.attrs
+                        (show c, show <| datetime.from_timestamp <| unwrap_ok <| de.run raw)
+                    | None -> ("none", "")
+                [
+                    (tui.fg tui.green <> tui.bold, False, Cons (show t.id) Nil),
+                    ("", True, Cons t.name Nil),
+                    ("", True, Cons task.task_typ Nil),
+                    ("", True, Cons current Nil),
+                    (tui.fg tui.yellow, True, Cons deadline Nil),
+                    (tui.fg tui.blue, True, map (\p -> p.key <> ": " <> unwrap_ok (ser.to_string p.value)) (std_map.to_list t.attrs)),
+                ])
+            print_list (tui.fg tui.white <> tui.bold) ["id", "name", "type", "current", "deadline", "attrs"] tasks
+        | _ -> println "else")
 
 seq cmd "log"
     "<type>     'Type for the log'
-     -d --desc=[desc]   	  'Optional description. Equivalent to -a desc ...'
      -a --attr [key] [val]... 'Optional attributes'"
     (\m ->
         let typ = unwrap (value_of m "type")
         let attrs = arr_to_map (values_of m "attr")
-        let attrs =
-            match value_of m "desc" with
-            | Some d -> insert "desc" (String d) attrs
-            | None -> attrs
-        let log = unwrap_ok (sched.log.new typ attrs)
-        seq println (show log.id)
+        let log_id = unwrap_ok (sched.log.new typ attrs)
+        seq println (show log_id)
         wrap ())
 
-cmd "list"
-    "<type>     'Object/Logs to list'
-     [limit]    'Number of objects/logs to list. Default 10'"
+seq cmd "task" ""
+    (\_ ->
+        seq print "Name: "
+        seq flush_stdout
+        do name = map trim read_line
+        seq print "Type: "
+        seq flush_stdout
+        do typ = map trim read_line
+        seq print "Repeat: "
+        seq flush_stdout
+        do repeated = map (\s -> string.contains s "y") read_line
+        do deadline : OptRepeated =
+            if repeated then
+                let read_times times : Array DateTime -> IO (Array DateTime) =
+                    seq print "> "
+                    seq flush_stdout
+                    do line = map trim read_line
+                    if string.is_empty line then
+                        wrap times
+                    else
+                        match datetime.parse line with
+                        | Ok time -> read_times (times <> [time])
+                        | Err e ->
+                            seq eprintln ("Error parsing time: " ++ e)
+                            read_times times
+                seq println "Times: "
+                do times = read_times []
+                seq print "Period: "
+                seq flush_stdout
+                do period_secs = map trim read_line >>= \period_secs ->
+                    match int.parse period_secs with
+                    | Ok secs -> wrap secs
+                    | Err e -> throw "period parsing"
+                seq print "Stop: "
+                seq flush_stdout
+                do stop_time = map trim read_line >>= \stop_time ->
+                    match datetime.parse stop_time with
+                    | Ok time -> wrap time
+                    | Err e -> throw e
+                let repeat : Repeated = sched.repeat times (Time (duration.seconds period_secs)) (After stop_time)
+                wrap (Repeat repeat)
+            else
+                seq print "Time: "
+                seq flush_stdout
+                do time = map trim read_line
+                match datetime.parse time with
+                | Ok time -> wrap (Single time)
+                | Err e -> throw e
+        seq print "Priority: "
+        seq flush_stdout
+        do priority = map trim read_line >>= \priority ->
+            match int.parse priority with
+            | Ok priority -> wrap priority
+            | Err e -> throw "priority parsing"
+        println (show (unwrap_ok (sched.task.new name typ deadline priority))))
+
+cmd "finish" "<id>       'Task (log) id to finish'"
     (\m ->
-        let s =
-            match unwrap <| value_of m "type" with 
-            | "log" -> show <| sched.log.find (\l -> True) (Some 10)
-            | "obj" -> show <| sched.obj.find (\o -> True) (Some 10)
-            | _ -> "else"
-        println s)
+        let id = value_of m "id" |> unwrap |> int.parse |> unwrap_ok
+        let _ = sched.task.finish id |> unwrap_ok
+        wrap ())

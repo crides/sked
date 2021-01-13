@@ -203,8 +203,10 @@ impl rustyline::highlight::Highlighter for Completer {
         }
         #[cfg(not(windows))]
         {
-            use ansi_term::Style;
-            Cow::Owned(Style::new().dimmed().paint(hint).to_string())
+            // use ansi_term::Style;
+            // Cow::Owned(Style::new().dimmed().paint(hint).to_string())
+            use termion::color::*;
+            Cow::Owned(format!("{}{}{}", Fg(LightBlack), hint, Fg(Reset)))
         }
     }
 

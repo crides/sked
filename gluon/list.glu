@@ -1,0 +1,55 @@
+let tui = import! sched.tui
+let list @ { List, ? } = import! std.list
+let { map } = import! std.functor
+let { println, ? } = import! std.io
+let string = import! std.string
+let { Foldable, foldl, concat, any, all, ? } = import! std.foldable
+let { min, max } = import! std.cmp
+let stream @ { Stream, zip_with, ? } = import! std.stream
+let { Monoid, ? } = import! std.monoid
+let { (<>) } = import! std.semigroup
+let { (<|), (|>), flip } = import! std.function
+let { Result, unwrap_ok } = import! std.result
+let ser @ { ? } = import! std.json.ser
+let std_map = import! std.map
+let { wrap } = import! std.applicative
+let { for } = import! std.traversable
+let { join, repeat, lalign, ralign } = import! util
+
+let print_list header_style header rows : String -> Array String -> List (Array (String, Bool, List String)) -> IO () =
+    let reset = tui.fg tui.no_color ++ tui.bg tui.no_color ++ tui.no_style
+    let row_lens = map (map (\cell -> foldl max 0 (map string.len cell._2))) rows
+    let longest = foldl (zip_with max) (stream.of (map string.len header)) (map stream.of row_lens)
+    let column_spacing = 2
+    let spacing = repeat " " column_spacing
+    seq println (header_style <> join (zip_with lalign (stream.of header) longest) spacing <> reset)
+    seq for rows (\row ->
+        let styles = stream.of (map (\cell -> cell._0) row)
+        let lefts = stream.of (map (\cell -> cell._1) row)
+        let cells = stream.of (map (\cell -> cell._2) row)
+        let print_line cells first : Stream (List String) -> Bool -> IO () =
+            if all ((==) Nil) cells then
+                if not first then
+                    println ""
+                else
+                    wrap ()
+            else
+                let lws = zip_with (\lines width -> (lines, width)) cells longest
+                let aligned = zip_with (\left lw ->
+                    let (lines, width) = lw
+                    match lines with 
+                    | Nil -> (repeat " " width, Nil)
+                    | Cons x xs -> ((if left then lalign else ralign) x width, xs)) lefts lws
+                let styled : Stream (String, List String) = (zip_with (\style xxs ->
+                    let (line, rest) = xxs
+                    (style <> line <> reset, rest)) styles aligned)
+                let contents = map (\cell -> cell._0) styled
+                let rests = map (\cell -> cell._1) styled
+                seq println <| join contents spacing
+                print_line rests False
+        print_line cells True)
+    wrap ()
+
+{
+    print_list,
+}

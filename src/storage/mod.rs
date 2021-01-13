@@ -3,22 +3,36 @@ mod kv;
 pub use kv::*;
 
 use chrono::Datelike;
+use thiserror::Error;
 
 use crate::script::time::{DateTime, Duration};
 
-#[derive(Clone, Debug, Trace, VmType, Pushable, Getable)]
+// FIXME define types (newtype?) for log and object IDs
+#[derive(Clone, Debug, Trace, VmType, Pushable, Getable, Error)]
 #[gluon_trace(skip)]
 pub enum Error {
+    #[error("Deadlock")]
     Deadlock,
+    // #[error("Database error: {0}")] TODO
+    // Database(#[from] sled::Error),
+    #[error("Can't compile regex '{0}'")]
     Regex(String),
-    InvalidLogID(i32),
-    InvalidObjID(i32),
-    ObjNotTask(i32),
-    ObjNotEvent(i32),
+    #[error("Invalid Log ID {0}")]
+    InvalidLogID(u32),
+    #[error("Invalid Object ID {0}")]
+    InvalidObjID(u32),
+    #[error("Object with id {0} is not an Task")]
+    ObjNotTask(u32),
+    #[error("Object with id {0} is not an Event")]
+    ObjNotEvent(u32),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+// FIXME manually implement `Pushable` and `Getable`, so that internal state is not passed to Gluon, and that
+// they are set to reset state when passed from Gluon
+// FIXME use other internal states to record when to stop i.e. can't change the stop properties for public
+// interface
 #[derive(Clone, Debug, Serialize, Deserialize, VmType, Pushable, Getable)]
 pub struct Repeated {
     /// A set of actual start times
@@ -32,8 +46,8 @@ pub struct Repeated {
 
 #[derive(Clone, Debug, Serialize, Deserialize, VmType, Pushable, Getable)]
 pub enum OptRepeated {
-    Repeated(Repeated),
     Single(DateTime),
+    Repeat(Repeated),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, VmType, Pushable, Getable)]
@@ -62,7 +76,7 @@ impl Every {
 
 #[derive(Clone, Debug, Serialize, Deserialize, VmType, Pushable, Getable)]
 pub enum Stop {
-    None,
+    Nonstop,
     Stopped,
     Count(i32),
     After(DateTime),

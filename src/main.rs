@@ -12,7 +12,9 @@ mod storage;
 mod util;
 
 use std::fs;
+use std::path::PathBuf;
 
+use clap::{App, Arg};
 use dirs::config_dir;
 
 use util::print_gluon_err;
@@ -22,7 +24,12 @@ fn main() {
     if !config_dir.is_dir() {
         fs::create_dir_all(&config_dir).unwrap();
     }
-    let init_file = config_dir.join("init.glu");
+    let matches = App::new("sched")
+        .arg(Arg::with_name("init-file").required(false))
+        .get_matches();
+    let init_file: PathBuf = matches
+        .value_of("init-file")
+        .map_or_else(|| config_dir.join("init.glu"), |s| s.into());
     let vm = script::get_vm(config_dir);
     if let Err(e) = script::run_user(&vm, &init_file) {
         print_gluon_err(e);

@@ -38,6 +38,8 @@ fn cmd(name: String, usage: String, handler: CommandHandler) -> IO<()> {
     IO::Value(())
 }
 
+// FIXME make the process a long lasting process (daemon), so that the client can use the shell's parsing to
+// send commands to the daemon and get response back. Or implement a nushell plugin, same idea
 pub fn cmd_repl() -> bool {
     let mut editor = Editor::<()>::new();
     if let Some(d) = data_dir() {

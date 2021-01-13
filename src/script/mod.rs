@@ -2,6 +2,8 @@ pub mod cmd;
 pub mod sched;
 pub mod task;
 pub mod time;
+mod tui;
+mod util;
 
 use std::fs::read_to_string;
 use std::path::{Path, PathBuf};
@@ -13,15 +15,16 @@ use gluon::{
 
 pub fn get_vm(config_dir: PathBuf) -> RootedThread {
     let vm = VmBuilder::new().import_paths(Some(vec![config_dir])).build();
-    vm.get_database_mut().set_optimize(false);
     vm.run_io(true);
-    add_extern_module(&vm, "time.prim", time::load);
-    add_extern_module(&vm, "cmd", cmd::load);
+    add_extern_module(&vm, "sched.time.prim", time::load);
+    add_extern_module(&vm, "sched.cmd.prim", cmd::load);
+    add_extern_module(&vm, "sched.tui", tui::load);
+    add_extern_module(&vm, "sched.util.prim", util::load);
     add_extern_module_with_deps(
         &vm,
-        "sched",
+        "sched.base.prim",
         sched::load,
-        vec!["std.map".into(), "time.prim".into(), "std.json".into()],
+        vec!["std.map".into(), "sched.time.prim".into(), "std.json".into()],
     );
     vm
 }

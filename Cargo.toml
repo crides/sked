@@ -17,14 +17,18 @@ serde_derive = "1.0.116"
 lazy_static = "1.4.0"
 dirs = "3.0.1"
 regex = "1.3.9"
-gluon = { git = "https://github.com/gluon-lang/gluon", features = ["serialization"] }
-gluon_codegen = { git = "https://github.com/gluon-lang/gluon" } #"0.17.2"
+gluon = { path = "../gluon", features = ["serialization"] }
+gluon_codegen = { path = "../gluon/codegen" } #"0.17.2"
+gluon_completion = { path = "../gluon/completion" } #"0.17.2"
 clap = "2.33.3"
+thiserror = "*"
 
 app_dirs = "1.2.1"
 futures = "0.3.5"
 tokio = { version = "0.2.22", features = ["rt-threaded", "rt-core", "macros", "signal"] }
 codespan = "0.9.5"
 codespan-reporting = "0.9.5"
-ansi_term = "0.12.1"
+termion = "*"
 
+[build-dependencies]
+walkdir = "2"

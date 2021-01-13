@@ -1,11 +1,17 @@
 let { ? } = import! std.string
 let { datetime, duration, ? } = import! time
 let { DateTime, ? } = datetime
-let { Map } = import! std.map
+let { Map, insert, empty } = import! std.map
 let { (<>) } = import! std.semigroup
 let { Value } = import! std.json
 let { to_string_pretty, ? } = import! std.json.ser
 let { unwrap_ok } = import! std.result
+let list = import! std.list
+let { Monoid, empty = mempty } = import! std.monoid
+let { Foldable, any, all, concat, foldl, foldr } = import! std.foldable
+let stream @ { Stream, zip_with, ? } = import! std.stream
+let string = import! std.string
+let { split } = import! sched.util.prim
 
 let show_value : Show Value = {
     show = \v -> unwrap_ok (to_string_pretty v)
@@ -32,6 +38,37 @@ type Log = { id : Int, typ : String, time : DateTime, attrs : Map String Value }
 #[derive(Show)]
 type Object = { id : Int, name : String, typ : String, desc : String, attrs : Map String Value }
 
+let join ?f ?m coll sep : [Foldable f] -> [Monoid m] -> f m -> m -> m =
+    let f acc x =
+        let { res, b } = acc
+        if b then { res = res <> sep <> x, b = True } else { res = x, b = True }
+    (foldl f { res = m.empty, b = False } coll).res
+
+let repeat ?m s len : [Monoid m] -> m -> Int -> m = concat (stream.take len (stream.repeat s))
+
+let ralign s len : String -> Int -> String = (repeat " " (len - string.len s)) ++ s
+let lalign s len : String -> Int -> String = s ++ (repeat " " (len - string.len s))
+
+let arr_to_map a : Array String -> Map String Value =
+    (foldl (\mk x ->
+            let { m, k } = mk
+            match k with
+            | Some key -> { m = insert key (String x) m, k = None }
+            | None -> { m, k = Some x })
+        { m = empty, k = None } a).m
+
+let notify body : String -> IO () =
+    seq execute (proc "notify-send" ["Sched", body])
+    wrap ()
+
+let naughty m: Array (String, String) -> IO () =
+    let m = map (\kv ->
+        let (k, v) = kv
+        k <> "=" <> v) m
+    seq proc "awesome-client" ["naughty = require \"naughty\""] |> execute
+    seq proc "awesome-client" ["naughty.notify({" <> (join m ",") <> "})"] |> execute
+    wrap ()
+
 {
     log = {
         Log,
@@ -49,4 +86,12 @@ type Object = { id : Int, name : String, typ : String, desc : String, attrs : Ma
         Value,
         show = show_value,
     },
+    join,
+    split,
+    arr_to_map,
+    repeat,
+    lalign,
+    ralign,
+    notify,
+    naughty,
 }

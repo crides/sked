@@ -11,15 +11,27 @@ pub struct Task {
     pub object: Object,
     pub deadline: OptRepeated,
     pub priority: u32,
+    pub task_typ: String,
+    /// A fixed-size FIFO cache of the daughter task ids with user configurable size
+    pub cache: Vec<u32>,
 }
 
+// FIXME use `IO<T>` for returns
 impl Task {
-    pub fn new(name: &str, typ: &str, deadline: OptRepeated, priority: u32) -> StorageResult<i32> {
-        lock_store()?.create_task(name, typ, deadline, priority)
+    pub fn new(name: &str, typ: &str, deadline: OptRepeated, priority: u32) -> StorageResult<u32> {
+        lock_store()?.create_task(name, typ, deadline, priority, None)
     }
 
-    pub fn get(id: i32) -> StorageResult<Task> {
+    pub fn get(id: u32) -> StorageResult<Task> {
         lock_store()?.get_task(id)
+    }
+
+    pub fn finish(id: u32) -> StorageResult<()> {
+        lock_store()?.task_finish(id, chrono::Local::now().into())
+    }
+
+    pub fn find_current(id: u32) -> StorageResult<Option<u32>> {
+        lock_store()?.find_current(id)
     }
 }
 
@@ -31,45 +43,11 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn new(name: &str, typ: &str, start: OptRepeated, duration: Duration) -> StorageResult<i32> {
-        lock_store()?.create_event(name, typ, start, duration)
+    pub fn new(name: &str, typ: &str, start: OptRepeated, duration: Duration) -> StorageResult<u32> {
+        lock_store()?.create_event(name, typ, start, duration, None)
     }
 
-    pub fn get(id: i32) -> StorageResult<Event> {
+    pub fn get(id: u32) -> StorageResult<Event> {
         lock_store()?.get_event(id)
-    }
-}
-
-#[derive(Clone, Copy, Debug, VmType, Pushable, Getable)]
-pub enum TaskStatus {
-    Pending,
-    Ready,
-    Finished,
-    Missed,
-    Deleted,
-}
-
-impl TaskStatus {
-    pub fn to_lower(self) -> String {
-        use TaskStatus::*;
-        match self {
-            Pending => "pending".to_string(),
-            Ready => "ready".to_string(),
-            Finished => "finished".to_string(),
-            Missed => "missed".to_string(),
-            Deleted => "deleted".to_string(),
-        }
-    }
-
-    pub fn from_string(s: &str) -> TaskStatus {
-        use TaskStatus::*;
-        match s {
-            "pending" => Pending,
-            "ready" => Ready,
-            "finished" => Finished,
-            "missed" => Missed,
-            "deleted" => Deleted,
-            _ => unreachable!(),
-        }
     }
 }
