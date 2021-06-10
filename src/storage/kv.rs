@@ -231,17 +231,35 @@ impl Storage {
             .ok_or(Error::InvalidLogID(id))
     }
 
-    pub fn find_log<F: Fn(&Log) -> bool>(&mut self, filter: F, limit: Option<usize>) -> Vec<Log> {
-        self.logs
-            .iter()
-            .rev()
-            .map(|res| res.unwrap())
+    fn filter_log_by<F: Fn(&Log) -> bool>(
+        iter: impl Iterator<Item = sled::Result<(sled::IVec, sled::IVec)>>,
+        filter: F,
+        limit: Option<usize>,
+    ) -> Vec<Log> {
+        iter.map(|res| res.unwrap())
             .map(|(k, v)| deser::<RawLog>(&v).with_id(deser_id(&k)))
             .filter(filter)
             .take(limit.unwrap_or(1))
             .collect()
     }
 
+    pub fn find_log<F: Fn(&Log) -> bool>(&mut self, filter: F, limit: Option<usize>) -> Vec<Log> {
+        Storage::filter_log_by(self.logs.iter().rev(), filter, limit)
+    }
+
+    pub fn find_log_old<F: Fn(&Log) -> bool>(&mut self, filter: F, limit: Option<usize>) -> Vec<Log> {
+        Storage::filter_log_by(self.logs.iter(), filter, limit)
+    }
+
+    pub fn find_log_from<F: Fn(&Log) -> bool>(&mut self, id: u32, filter: F, limit: Option<usize>) -> Vec<Log> {
+        Storage::filter_log_by(self.logs.range(..ser_id(id)).rev(), filter, limit)
+    }
+
+    pub fn find_log_old_from<F: Fn(&Log) -> bool>(&mut self, id: u32, filter: F, limit: Option<usize>) -> Vec<Log> {
+        Storage::filter_log_by(self.logs.range(ser_id(id)..), filter, limit)
+    }
+
+    // Object stuff
     fn get_obj_id(&mut self) -> u32 {
         deser_id(
             &self
@@ -326,15 +344,37 @@ impl Storage {
             .ok_or(Error::InvalidObjID(id))
     }
 
-    pub fn find_obj<F: Fn(&Object) -> bool>(&mut self, filter: F, limit: Option<usize>) -> Vec<Object> {
-        self.objs
-            .iter()
-            .rev()
-            .map(|res| res.unwrap())
+    fn filter_obj_by<F: Fn(&Object) -> bool>(
+        iter: impl Iterator<Item = sled::Result<(sled::IVec, sled::IVec)>>,
+        filter: F,
+        limit: Option<usize>,
+    ) -> Vec<Object> {
+        iter.map(|res| res.unwrap())
             .map(|(k, v)| deser::<RawObject>(&v).with_id(deser_id(&k)))
             .filter(filter)
             .take(limit.unwrap_or(1))
             .collect()
+    }
+
+    pub fn find_obj<F: Fn(&Object) -> bool>(&mut self, filter: F, limit: Option<usize>) -> Vec<Object> {
+        Storage::filter_obj_by(self.objs.iter().rev(), filter, limit)
+    }
+
+    pub fn find_obj_old<F: Fn(&Object) -> bool>(&mut self, filter: F, limit: Option<usize>) -> Vec<Object> {
+        Storage::filter_obj_by(self.objs.iter(), filter, limit)
+    }
+
+    pub fn find_obj_from<F: Fn(&Object) -> bool>(&mut self, id: u32, filter: F, limit: Option<usize>) -> Vec<Object> {
+        Storage::filter_obj_by(self.objs.range(..ser_id(id)).rev(), filter, limit)
+    }
+
+    pub fn find_obj_old_from<F: Fn(&Object) -> bool>(
+        &mut self,
+        id: u32,
+        filter: F,
+        limit: Option<usize>,
+    ) -> Vec<Object> {
+        Storage::filter_obj_by(self.objs.range(ser_id(id)..), filter, limit)
     }
 
     pub fn create_task(

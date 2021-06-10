@@ -80,6 +80,18 @@ impl Log {
         Ok(lock_store()?.find_log(|l| filter.clone().call(l.clone()).unwrap(), limit))
     }
 
+    fn find_from(id: u32, filter: FunctionRef<fn(Log) -> bool>, limit: Option<usize>) -> StorageResult<Vec<Log>> {
+        Ok(lock_store()?.find_log_from(id, |l| filter.clone().call(l.clone()).unwrap(), limit))
+    }
+
+    fn find_old(filter: FunctionRef<fn(Log) -> bool>, limit: Option<usize>) -> StorageResult<Vec<Log>> {
+        Ok(lock_store()?.find_log_old(|l| filter.clone().call(l.clone()).unwrap(), limit))
+    }
+
+    fn find_old_from(id: u32, filter: FunctionRef<fn(Log) -> bool>, limit: Option<usize>) -> StorageResult<Vec<Log>> {
+        Ok(lock_store()?.find_log_old_from(id, |l| filter.clone().call(l.clone()).unwrap(), limit))
+    }
+
     fn list(num: usize) -> IO<()> {
         let logs = try_io!(lock_store()).find_log(|_l| true, Some(num));
         let header = (
@@ -200,6 +212,22 @@ impl Object {
     fn find(filter: FunctionRef<fn(Object) -> bool>, limit: Option<usize>) -> StorageResult<Vec<Object>> {
         Ok(lock_store()?.find_obj(|o| filter.clone().call(o.clone()).unwrap(), limit))
     }
+
+    fn find_from(id: u32, filter: FunctionRef<fn(Object) -> bool>, limit: Option<usize>) -> StorageResult<Vec<Object>> {
+        Ok(lock_store()?.find_obj_from(id, |o| filter.clone().call(o.clone()).unwrap(), limit))
+    }
+
+    fn find_old(filter: FunctionRef<fn(Object) -> bool>, limit: Option<usize>) -> StorageResult<Vec<Object>> {
+        Ok(lock_store()?.find_obj_old(|o| filter.clone().call(o.clone()).unwrap(), limit))
+    }
+
+    fn find_old_from(
+        id: u32,
+        filter: FunctionRef<fn(Object) -> bool>,
+        limit: Option<usize>,
+    ) -> StorageResult<Vec<Object>> {
+        Ok(lock_store()?.find_obj_old_from(id, |o| filter.clone().call(o.clone()).unwrap(), limit))
+    }
 }
 
 pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
@@ -217,6 +245,9 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
                 get => primitive!(1, Log::get),
                 set_attr => primitive!(3, Log::set_attr),
                 find => primitive!(2, Log::find),
+                find_from => primitive!(3, Log::find_from),
+                find_old => primitive!(2, Log::find_old),
+                find_old_from => primitive!(3, Log::find_old_from),
                 list => primitive!(1, Log::list),
             },
 
@@ -228,6 +259,9 @@ pub fn load(thread: &Thread) -> Result<ExternModule, gluon::vm::Error> {
                 set_attr => primitive!(3, Object::set_attr),
                 del_attr => primitive!(2, Object::del_attr),
                 find => primitive!(2, Object::find),
+                find_from => primitive!(3, Object::find_from),
+                find_old => primitive!(2, Object::find_old),
+                find_old_from => primitive!(3, Object::find_old_from),
             },
 
             task => record! {
