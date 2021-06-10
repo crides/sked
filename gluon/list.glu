@@ -28,24 +28,24 @@ let print_list header_style header rows : String -> Array String -> List (Array 
         let lefts = stream.of (map (\cell -> cell._1) row)
         let cells = stream.of (map (\cell -> cell._2) row)
         let print_line cells first : Stream (List String) -> Bool -> IO () =
-            if all ((==) Nil) cells then
+            let lws = zip_with (\lines width -> (lines, width)) cells longest
+            let aligned = zip_with (\left lw ->
+                let (lines, width) = lw
+                match lines with 
+                | Nil -> (repeat " " width, Nil)
+                | Cons x xs -> ((if left then lalign else ralign) x width, xs)) lefts lws
+            let styled : Stream (String, List String) = (zip_with (\style xxs ->
+                let (line, rest) = xxs
+                (style <> line <> reset, rest)) styles aligned)
+            let contents = map (\cell -> cell._0) styled
+            let rests = map (\cell -> cell._1) styled
+            seq println <| join contents spacing
+            if all ((==) Nil) rests then
                 if not first then
                     println ""
                 else
                     wrap ()
             else
-                let lws = zip_with (\lines width -> (lines, width)) cells longest
-                let aligned = zip_with (\left lw ->
-                    let (lines, width) = lw
-                    match lines with 
-                    | Nil -> (repeat " " width, Nil)
-                    | Cons x xs -> ((if left then lalign else ralign) x width, xs)) lefts lws
-                let styled : Stream (String, List String) = (zip_with (\style xxs ->
-                    let (line, rest) = xxs
-                    (style <> line <> reset, rest)) styles aligned)
-                let contents = map (\cell -> cell._0) styled
-                let rests = map (\cell -> cell._1) styled
-                seq println <| join contents spacing
                 print_line rests False
         print_line cells True)
     wrap ()

@@ -12,7 +12,7 @@ let { (<>) } = import! std.semigroup
 let sched @ { Repeated, Error } = import! sched.base.prim
 let int = import! std.int
 let { Result, unwrap_ok } = import! std.result
-let { unwrap } = import! std.option
+let { unwrap, unwrap_or } = import! std.option
 let { log = { Log, ? }, map = { Map, ? }, obj = { Object, ? }, json = { Value, ? },
     join,
     split,
@@ -30,6 +30,7 @@ let { foldl } = import! std.foldable
 let list @ { List, ? } = import! std.list
 let tui = import! sched.tui
 let { print_list } = import! list
+let array = import! std.array
 
 type Stop = 
     | Nonstop
@@ -49,20 +50,21 @@ seq cmd "list"
     "<type>     'Object/Logs to list'
      [limit]    'Number of objects/logs to list. Default 10'"
     (\m ->
+        let limit = unwrap_or 10 <| map (\l -> unwrap_ok <| int.parse l) <| value_of m "limit"
         match unwrap <| value_of m "type" with 
         | "log" ->
-            let logs = unwrap_ok <| sched.log.find (\l -> True) (Some 10)
+            let logs = unwrap_ok <| sched.log.find (\l -> True) (Some limit)
             let logs = flip map (list.of logs) (\l ->
                 [
                     (tui.fg tui.green <> tui.bold, False, Cons (show l.id) Nil),
                     ("", True, Cons l.typ Nil),
-                    ("", True, Cons (show (datetime.with_timezone l.time timezone.local)) Nil),
+                    ("", True, Cons (show (datetime.to_local l.time)) Nil),
                     (tui.fg tui.blue, True, map (\p -> p.key <> ": " <> unwrap_ok (ser.to_string p.value)) (std_map.to_list l.attrs)),
                 ])
             print_list (tui.fg tui.white <> tui.bold) ["id", "type", "time", "attrs"] logs
 
         | "obj" ->
-            let objs = unwrap_ok <| sched.obj.find (\o -> True) (Some 10)
+            let objs = unwrap_ok <| sched.obj.find (\o -> True) (Some limit)
             let objs = flip map (list.of objs) (\o ->
                 [
                     (tui.fg tui.green <> tui.bold, False, Cons (show o.id) Nil),
@@ -72,7 +74,7 @@ seq cmd "list"
                 ])
             print_list (tui.fg tui.white <> tui.bold) ["id", "name", "type", "attrs"] objs
         | "task" ->
-            let tasks = unwrap_ok <| sched.obj.find (\t -> t.typ == "task") (Some 10)
+            let tasks = unwrap_ok <| sched.obj.find (\t -> t.typ == "task") (Some limit)
             let tasks = flip map (list.of tasks) (\t ->
                 let task = unwrap_ok <| sched.task.get t.id
                 let current = unwrap_ok <| sched.task.find_current t.id
@@ -87,11 +89,12 @@ seq cmd "list"
                     (tui.fg tui.green <> tui.bold, False, Cons (show t.id) Nil),
                     ("", True, Cons t.name Nil),
                     ("", True, Cons task.task_typ Nil),
+                    (tui.fg tui.yellow, False, Cons (show task.priority) Nil),
                     ("", True, Cons current Nil),
                     (tui.fg tui.yellow, True, Cons deadline Nil),
                     (tui.fg tui.blue, True, map (\p -> p.key <> ": " <> unwrap_ok (ser.to_string p.value)) (std_map.to_list t.attrs)),
                 ])
-            print_list (tui.fg tui.white <> tui.bold) ["id", "name", "type", "current", "deadline", "attrs"] tasks
+            print_list (tui.fg tui.white <> tui.bold) ["id", "name", "type", "priority", "current", "deadline", "attrs"] tasks
         | _ -> println "else")
 
 seq cmd "log"
@@ -102,6 +105,31 @@ seq cmd "log"
         let attrs = arr_to_map (values_of m "attr")
         let log_id = unwrap_ok (sched.log.new typ attrs)
         seq println (show log_id)
+        wrap ())
+
+seq cmd "stat" ""
+    (\_ ->
+        println "Sleep times:"
+        let print_sleep_stat id num : Option Int -> Int -> IO () =
+            if num == 0 then
+                wrap ()
+            else
+                let ends =
+                    let find_func =
+                        match id with
+                        | Some id -> sched.log.find_from id
+                        | None -> sched.log.find
+                    unwrap_ok <| find_func (\l -> l.typ == "bio.sleep.from-bed") (Some 1)
+                if array.len ends == 0 then
+                    wrap ()
+                else
+                    let end = array.index ends 0
+                    let start = array.index (unwrap_ok <| sched.log.find_from end.id (\l -> l.typ == "bio.sleep.to-bed") (Some 1)) 0
+                    let start_time = datetime.to_local start.time
+                    let end_time = datetime.to_local end.time
+                    seq println ("Start: " ++ show start_time ++ ", end: " ++ show end_time ++ ", length: " ++ show (datetime.sub end_time start_time))
+                    print_sleep_stat (Some (start.id + 1)) (num - 1)
+        print_sleep_stat None 7
         wrap ())
 
 seq cmd "task" ""

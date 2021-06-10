@@ -57,17 +57,17 @@ let arr_to_map a : Array String -> Map String Value =
             | None -> { m, k = Some x })
         { m = empty, k = None } a).m
 
-let notify body : String -> IO () =
-    seq execute (proc "notify-send" ["Sched", body])
-    wrap ()
+/* let notify body : String -> IO () = */
+/*     seq execute (proc "notify-send" ["Sched", body]) */
+/*     wrap () */
 
-let naughty m: Array (String, String) -> IO () =
-    let m = map (\kv ->
-        let (k, v) = kv
-        k <> "=" <> v) m
-    seq proc "awesome-client" ["naughty = require \"naughty\""] |> execute
-    seq proc "awesome-client" ["naughty.notify({" <> (join m ",") <> "})"] |> execute
-    wrap ()
+/* let naughty m: Array (String, String) -> IO () = */
+/*     let m = map (\kv -> */
+/*         let (k, v) = kv */
+/*         k <> "=" <> v) m */
+/*     seq proc "awesome-client" ["naughty = require \"naughty\""] |> execute */
+/*     seq proc "awesome-client" ["naughty.notify({" <> (join m ",") <> "})"] |> execute */
+/*     wrap () */
 
 {
     log = {
@@ -92,6 +92,6 @@ let naughty m: Array (String, String) -> IO () =
     repeat,
     lalign,
     ralign,
-    notify,
-    naughty,
+    /* notify, */
+    /* naughty, */
 }
