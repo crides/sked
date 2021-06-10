@@ -160,6 +160,13 @@ fn deser_id(bytes: &[u8]) -> u32 {
     u32::from_be_bytes(bytes.try_into().expect("malformed id in binary"))
 }
 
+// We don't need meta cuz the ids are just the lengths of the arrays
+#[derive(Debug, Serialize, Deserialize)]
+struct DbData {
+    logs: Vec<serde_json::Value>,
+    objs: Vec<serde_json::Value>,
+}
+
 impl Storage {
     pub fn new() -> Storage {
         let config_dir = dirs::config_dir().unwrap().join("sched"); // FIXME
@@ -549,5 +556,44 @@ impl Storage {
             }
         }
         Ok(None)
+    }
+
+    pub fn export(&self) -> serde_json::Value {
+        let logs = self
+            .logs
+            .iter()
+            .map(|r| r.unwrap())
+            .enumerate()
+            .map(|(i, (k, v))| {
+                assert_eq!(i as u32 + 1, deser_id(&k));
+                deser(&v)
+            })
+            .collect();
+        let objs = self
+            .objs
+            .iter()
+            .map(|r| r.unwrap())
+            .enumerate()
+            .map(|(i, (k, v))| {
+                assert_eq!(i as u32 + 1, deser_id(&k));
+                deser(&v)
+            })
+            .collect();
+        serde_json::to_value(DbData { logs, objs }).unwrap()
+    }
+
+    pub fn import(&self, s: &str) {
+        let data: DbData = serde_json::from_str(s).unwrap();
+        self.meta.clear().unwrap();
+        self.logs.clear().unwrap();
+        self.objs.clear().unwrap();
+        for (i, log) in data.logs.iter().enumerate() {
+            self.logs.insert(ser_id(i as u32 + 1), ser(log)).unwrap();
+        }
+        for (i, obj) in data.objs.iter().enumerate() {
+            self.objs.insert(ser_id(i as u32 + 1), ser(obj)).unwrap();
+        }
+        self.meta.insert("logs_id", ser_id(data.logs.len() as u32 + 1)).unwrap();
+        self.meta.insert("objs_id", ser_id(data.objs.len() as u32 + 1)).unwrap();
     }
 }
