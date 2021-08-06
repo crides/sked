@@ -9,7 +9,7 @@ let { map } = import! std.functor
 let string @ { trim } = import! std.string
 let { (>>=) } = import! std.monad
 let { (<>) } = import! std.semigroup
-let sched @ { Repeated, Error } = import! sched.base.prim
+let sched @ { Repeated } = import! sched.base.prim
 let int = import! std.int
 let { Result, unwrap_ok } = import! std.result
 let { unwrap, unwrap_or } = import! std.option
@@ -45,6 +45,15 @@ type Every =
 type OptRepeated =
     | Single DateTime
     | Repeat Repeated
+
+#[derive(Show)]
+type Error =
+    | Deadlock
+    | Regex String
+    | InvalidLogID Int
+    | InvalidObjID Int
+    | ObjNotTask Int
+    | ObjNotEvent Int
 
 seq cmd "list"
     "<type>     'Object/Logs to list'
@@ -186,7 +195,11 @@ seq cmd "task" ""
             match int.parse priority with
             | Ok priority -> wrap priority
             | Err e -> throw "priority parsing"
-        println (show (unwrap_ok (sched.task.new name typ deadline priority))))
+        match sched.task.new name typ deadline priority with
+        | Ok id -> println (show id)
+        | Err e ->
+            let _e : Error = e
+            println (show _e))
 
 cmd "finish" "<id>       'Task (log) id to finish'"
     (\m ->

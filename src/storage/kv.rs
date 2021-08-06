@@ -1,147 +1,33 @@
-use std::collections::BTreeMap;
+use std::borrow::Cow;
 use std::convert::TryInto;
+use std::sync::Mutex;
 
 use chrono::{TimeZone, Utc};
+use serde::de::{Deserialize, DeserializeOwned};
 use serde_json::json;
-use sled::Tree;
+use sled::{Db, Tree};
 
 use crate::{
-    script::{
-        sched::{AttrValue, Attrs, Log, Object},
-        task::{Event, Task},
-        time::{DateTime, Duration},
-    },
-    signal::{SignalHandler, SignalHandlers},
-    storage::{Error, OptRepeated, Result},
+    attrs,
+    handler::{LogHandler, LogHandlers},
+    storage::time::{DateTime, Duration},
+    storage::{api::*, Error, Error as StorageError, OptRepeated, Result as StorageResult},
 };
 
-macro_rules! attrs {
-    { $($tt:tt)+ } => {
-        {
-            use ::std::collections::BTreeMap;
-            let mut object: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-            serde_json::json_internal!(@object object () ($($tt)+) ($($tt)+));
-            object
-        }
-    };
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct RawLog {
-    typ: String,
-    /// UTC time for when the log happened
-    time: DateTime,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    attrs: Attrs,
-}
-
-impl RawLog {
-    fn with_id(self, id: u32) -> Log {
-        Log {
-            id,
-            typ: self.typ,
-            time: self.time,
-            attrs: self.attrs,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct RawObject {
-    name: String,
-    typ: String,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "String::is_empty")]
-    desc: String,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    attrs: Attrs,
-}
-
-impl RawObject {
-    fn with_id(self, id: u32) -> Object {
-        Object {
-            id,
-            typ: self.typ,
-            name: self.name,
-            desc: self.desc,
-            attrs: self.attrs,
-        }
-    }
-}
-
-impl From<Object> for RawObject {
-    fn from(o: Object) -> RawObject {
-        RawObject {
-            typ: o.typ,
-            name: o.name,
-            desc: o.desc,
-            attrs: o.attrs,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct RawEvent {
-    #[serde(flatten)]
-    pub object: RawObject,
-    pub start: OptRepeated,
-    pub duration: Duration,
-}
-
-impl RawEvent {
-    fn with_id(self, id: u32) -> Event {
-        Event {
-            object: self.object.with_id(id),
-            start: self.start,
-            duration: self.duration,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct RawTask {
-    #[serde(flatten)]
-    pub object: RawObject,
-    pub deadline: OptRepeated,
-    pub priority: u32,
-    #[serde(rename = "task-typ")]
-    pub task_typ: String,
-    /// A fixed-size FIFO cache of the daughter task ids with user configurable size
-    pub cache: Vec<u32>,
-}
-
-impl RawTask {
-    fn with_id(self, id: u32) -> Task {
-        Task {
-            object: self.object.with_id(id),
-            deadline: self.deadline,
-            priority: self.priority,
-            task_typ: self.task_typ,
-            cache: self.cache,
-        }
-    }
-}
-
-impl From<Task> for RawTask {
-    fn from(t: Task) -> RawTask {
-        RawTask {
-            object: t.object.into(),
-            deadline: t.deadline,
-            priority: t.priority,
-            task_typ: t.task_typ,
-            cache: t.cache,
-        }
-    }
-}
-
-// FIXME limit range of logs to only logs or handlers
 pub struct Storage {
+    db: Db,
     meta: Tree,
     logs: Tree,
     objs: Tree,
-    handlers: SignalHandlers,
+    handlers: Mutex<LogHandlers>,
+}
+
+fn ser_obj<S: Into<impl serde::Serialize> + ApiObj>(obj: S) -> Vec<u8> {
+    serde_json::to_vec(&obj.into()).unwrap()
+}
+
+fn ser_log<S: Into<impl serde::Serialize> + ApiLog>(log: S) -> Vec<u8> {
+    serde_json::to_vec(&log.into()).unwrap()
 }
 
 fn ser<S: ?Sized + serde::Serialize>(obj: &S) -> Vec<u8> {
@@ -152,12 +38,48 @@ fn deser<'a, T: serde::Deserialize<'a>>(bytes: &'a [u8]) -> T {
     serde_json::from_slice(bytes).unwrap()
 }
 
-fn ser_id(id: u32) -> Vec<u8> {
-    id.to_be_bytes().to_vec()
+fn deser_obj<'de, T: ApiObj + Deserialize<'de>>(bytes: &'de [u8]) -> StorageResult<RawObj<T>> {
+    let proto: ProtoObj = serde_json::from_slice(bytes).map_err(Error::Serde)?;
+    let deser_typ = proto.typ;
+    if deser_typ != T::OBJ_TYPE {
+        return Err(Error::TypeMismatch {
+            expected: T::OBJ_TYPE.into(),
+            actual: deser_typ.into(),
+        });
+    }
+    serde_json::from_slice(bytes).map_err(Error::Serde)
 }
 
-fn deser_id(bytes: &[u8]) -> u32 {
-    u32::from_be_bytes(bytes.try_into().expect("malformed id in binary"))
+fn deser_log<'de, T: ApiLog + Deserialize<'de>>(bytes: &'de [u8]) -> StorageResult<RawLog<T>> {
+    let proto: ProtoLog = serde_json::from_slice(bytes).map_err(Error::Serde)?;
+    let deser_typ = proto.typ;
+    if deser_typ != T::LOG_TYPE {
+        return Err(Error::TypeMismatch {
+            expected: T::LOG_TYPE.into(),
+            actual: deser_typ.into(),
+        });
+    }
+    serde_json::from_slice(bytes).map_err(Error::Serde)
+}
+
+fn try_deser<'a, T: serde::Deserialize<'a>>(bytes: &'a [u8]) -> serde_json::Result<T> {
+    serde_json::from_slice(bytes)
+}
+
+fn ser_obj_id(id: ObjId) -> Vec<u8> {
+    id.0.to_be_bytes().to_vec()
+}
+
+fn ser_log_id(id: LogId) -> Vec<u8> {
+    id.0.to_be_bytes().to_vec()
+}
+
+fn deser_log_id(bytes: &[u8]) -> LogId {
+    LogId(u32::from_be_bytes(bytes.try_into().expect("malformed log id in db")))
+}
+
+fn deser_obj_id(bytes: &[u8]) -> ObjId {
+    ObjId(u32::from_be_bytes(bytes.try_into().expect("malformed obj id in db")))
 }
 
 // We don't need meta cuz the ids are just the lengths of the arrays
@@ -173,373 +95,421 @@ impl Storage {
         let db = sled::open(config_dir.join("sched.db")).unwrap();
         let meta = db.open_tree("meta").unwrap();
         if !meta.contains_key("logs_id").unwrap() {
-            meta.insert("logs_id", ser_id(1u32)).unwrap();
+            meta.insert("logs_id", ser_log_id(LogId(1))).unwrap();
         }
         if !meta.contains_key("objs_id").unwrap() {
-            meta.insert("objs_id", ser_id(1u32)).unwrap();
+            meta.insert("objs_id", ser_obj_id(ObjId(1))).unwrap();
+        }
+        let objs = db.open_tree("objs").unwrap();
+        let has_valid_state = objs
+            .get(&ser_obj_id(State::ID))
+            .unwrap()
+            .map(|o| {
+                let state: Result<RawObj<State>, _> = deser_obj(&o);
+                state.is_ok()
+            })
+            .unwrap_or(false);
+        if !has_valid_state {
+            objs.insert(ser_obj_id(State::ID), ser(&State::new())).unwrap();
         }
         Storage {
-            meta,
             logs: db.open_tree("logs").unwrap(),
-            objs: db.open_tree("objs").unwrap(),
-            handlers: SignalHandlers::new(),
+            db,
+            meta,
+            objs,
+            handlers: Mutex::new(LogHandlers::new()),
         }
     }
 
-    pub fn add_gluon(&mut self, pat: &str, f: SignalHandler) -> Result<()> {
-        self.handlers.add_gluon(pat, f)
+    #[cfg(features = "scripting")]
+    pub fn add_gluon<T: ApiLog>(&self, pat: &str, f: LogHandler) -> StorageResult<()> {
+        self.handlers.lock().unwrap().add_gluon(pat, f)
     }
 
-    fn get_log_id(&mut self) -> u32 {
-        deser_id(
+    fn get_log_id(&self) -> LogId {
+        deser_log_id(
             &self
                 .meta
-                .fetch_and_update("logs_id", |old| Some(ser_id(deser_id(old.unwrap()) + 1)))
+                .fetch_and_update("logs_id", |old| {
+                    Some(ser_log_id(LogId(deser_log_id(old.unwrap()).0 + 1)))
+                })
                 .unwrap()
                 .unwrap(),
         )
     }
 
-    pub fn create_log(&mut self, typ: String, attrs: Attrs) -> Result<u32> {
+    fn append_log_raw<L: ApiLog>(&self, log: L, attrs: Option<Attrs>) -> StorageResult<LogId> {
         let id = self.get_log_id();
-        let time = Utc::now().into();
-        let raw = RawLog { typ, attrs, time };
-        self.logs.insert(ser_id(id), ser(&raw)).unwrap();
-        let log = raw.with_id(id);
-        self.handlers.handle(&log);
+        let raw = RawLog {
+            attrs,
+            time: DateTime::now(),
+            typ: L::LOG_TYPE.into(),
+            inner: log,
+        };
+        let serialized = ser(&raw);
+        let proto: ProtoLog = serde_json::from_slice(&serialized).unwrap();
+        self.logs.insert(ser_log_id(id), serialized).unwrap();
+        let log = proto.with_id(id);
+        self.handlers.lock().unwrap().handle(&log);
         Ok(id)
     }
 
-    pub fn log_add_attr_raw(&mut self, id: u32, key: String, val: AttrValue) -> Result<()> {
-        self.logs
-            .fetch_and_update(ser_id(id), |old| {
-                let mut log: RawLog = deser(old.unwrap());
-                // FIXME key val cloned cuz captured by closure; use batch?
-                log.attrs.entry(key.clone()).or_insert(val.clone());
-                Some(ser(&log))
-            })
-            .unwrap();
-        Ok(())
+    pub fn append_log<L: ApiLog>(&self, log: L) -> StorageResult<LogId> {
+        Storage::append_log_raw(&self, log, None)
     }
 
-    /// Add an attribute to a log. This is useful because sometimes not all information is available at the
-    /// time of log creation
-    pub fn log_add_attr(&mut self, id: u32, key: String, val: AttrValue) -> Result<()> {
-        self.log_add_attr_raw(id, key.clone(), val)?;
-        self.create_log("log.set_attr".into(), attrs! { "id": id, "attr": key })?;
-        Ok(())
+    pub fn append_log_attr<L: ApiLog>(&self, log: L, attrs: Attrs) -> StorageResult<LogId> {
+        Storage::append_log_raw(&self, log, Some(attrs))
     }
 
-    pub fn get_log(&mut self, id: u32) -> Result<Log> {
+    pub fn get_log<L: ApiLog + DeserializeOwned>(&self, id: LogId) -> StorageResult<Log<L>> {
         self.logs
-            .get(ser_id(id))
+            .get(ser_log_id(id))
             .unwrap()
-            .map(|l| deser::<RawLog>(&l).with_id(id))
-            .ok_or(Error::InvalidLogID(id))
+            .map(|l| deser_log(&l).map(|r| r.with_id(id)))
+            .unwrap_or(Err(Error::InvalidLogID(id)))
     }
 
-    fn filter_log_by<F: Fn(&Log) -> bool>(
+    fn filter_log_by<F: Fn(&ScriptLog) -> bool>(
         iter: impl Iterator<Item = sled::Result<(sled::IVec, sled::IVec)>>,
         filter: F,
         limit: Option<usize>,
-    ) -> Vec<Log> {
-        iter.map(|res| res.unwrap())
-            .map(|(k, v)| deser::<RawLog>(&v).with_id(deser_id(&k)))
-            .filter(filter)
-            .take(limit.unwrap_or(1))
-            .collect()
+    ) -> Vec<ScriptLog> {
+        let iter = iter
+            .map(|res| res.unwrap())
+            .map(|(k, v)| deser::<ProtoLog>(&v).with_id(deser_log_id(&k)))
+            .filter(filter);
+        if let Some(limit) = limit {
+            iter.take(limit).collect()
+        } else {
+            iter.collect()
+        }
     }
 
-    pub fn find_log<F: Fn(&Log) -> bool>(&mut self, filter: F, limit: Option<usize>) -> Vec<Log> {
+    pub fn find_log<F: Fn(&ScriptLog) -> bool>(&self, filter: F, limit: Option<usize>) -> Vec<ScriptLog> {
         Storage::filter_log_by(self.logs.iter().rev(), filter, limit)
     }
 
-    pub fn find_log_old<F: Fn(&Log) -> bool>(&mut self, filter: F, limit: Option<usize>) -> Vec<Log> {
+    pub fn find_log_old<F: Fn(&ScriptLog) -> bool>(&self, filter: F, limit: Option<usize>) -> Vec<ScriptLog> {
         Storage::filter_log_by(self.logs.iter(), filter, limit)
     }
 
-    pub fn find_log_from<F: Fn(&Log) -> bool>(&mut self, id: u32, filter: F, limit: Option<usize>) -> Vec<Log> {
-        Storage::filter_log_by(self.logs.range(..ser_id(id)).rev(), filter, limit)
+    pub fn find_log_from<F: Fn(&ScriptLog) -> bool>(
+        &self,
+        id: LogId,
+        filter: F,
+        limit: Option<usize>,
+    ) -> Vec<ScriptLog> {
+        Storage::filter_log_by(self.logs.range(..ser_log_id(id)).rev(), filter, limit)
     }
 
-    pub fn find_log_old_from<F: Fn(&Log) -> bool>(&mut self, id: u32, filter: F, limit: Option<usize>) -> Vec<Log> {
-        Storage::filter_log_by(self.logs.range(ser_id(id)..), filter, limit)
+    pub fn find_log_old_from<F: Fn(&ScriptLog) -> bool>(
+        &self,
+        id: LogId,
+        filter: F,
+        limit: Option<usize>,
+    ) -> Vec<ScriptLog> {
+        Storage::filter_log_by(self.logs.range(ser_log_id(id)..), filter, limit)
     }
 
     // Object stuff
-    fn get_obj_id(&mut self) -> u32 {
-        deser_id(
+    fn get_obj_id(&self) -> ObjId {
+        deser_obj_id(
             &self
                 .meta
-                .fetch_and_update("objs_id", |old| Some(ser_id(deser_id(old.unwrap()) + 1)))
+                .fetch_and_update("objs_id", |old| {
+                    Some(ser_obj_id(ObjId(deser_obj_id(old.unwrap()).0 + 1)))
+                })
                 .unwrap()
                 .unwrap(),
         )
     }
 
-    pub fn create_obj(&mut self, name: &str, typ: &str) -> Result<u32> {
-        let id = self.get_obj_id();
-        self.objs
-            .insert(ser_id(id), ser(&json!({ "name": name, "typ": typ })))
-            .unwrap();
-        self.create_log("obj.create".into(), attrs! { "id": id })?;
+    pub fn get_state(&self) -> StorageResult<State> {
+        Ok(self.get_obj(State::ID)?.inner)
+    }
+
+    pub fn set_state(&self, state: State) -> StorageResult<()> {
+        // TODO diff state and log?
+        self.set_obj(State::ID, state)
+    }
+
+    // pub fn state_get(&self, attr: &str) -> Option<AttrValue> {
+    //     let state: Option<Obj<State>> = self.get_obj(State::ID).ok();
+    //     state.map(|s| s.attrs.get(attr).cloned()).flatten()
+    // }
+
+    // pub fn state_set(&self, attr: &str, val: AttrValue) {
+    //     self.obj_set_attr(0, attr.to_owned(), val).unwrap();
+    // }
+
+    fn create_obj_with_id<O: ApiObj>(
+        &self,
+        id: ObjId,
+        obj: O,
+        name: String,
+        desc: Option<String>,
+        attrs: Option<Attrs>,
+    ) -> StorageResult<ObjId> {
+        let obj = RawObj {
+            inner: obj,
+            name,
+            typ: O::OBJ_TYPE.into(),
+            desc,
+            attrs,
+        };
+        self.objs.insert(ser_obj_id(id), ser(&obj)).unwrap();
+        self.append_log(CreateObj {
+            id,
+            typ: O::OBJ_TYPE.into(),
+        })?;
         Ok(id)
     }
 
-    pub fn obj_set_desc(&mut self, id: u32, desc: String) -> Result<()> {
-        let mut attrs = None;
-        self.objs
-            .fetch_and_update(ser_id(id), |old| {
-                let mut obj: RawObject = deser(old.unwrap());
-                if obj.desc.is_empty() {
-                    attrs = Some(attrs! { "id": id, "new": desc });
-                } else {
-                    attrs = Some(attrs! { "id": id, "old": obj.desc, "new": desc });
-                }
-                // FIXME desc cloned cuz captured by closure; use batch?
-                obj.desc = desc.clone();
-                Some(ser(&obj))
-            })
-            .unwrap();
-        self.create_log("obj.set_desc".into(), attrs.unwrap())?;
-        Ok(())
+    pub fn create_obj<O: ApiObj>(
+        &self,
+        obj: O,
+        name: String,
+        desc: Option<String>,
+        attrs: Option<Attrs>,
+    ) -> StorageResult<ObjId> {
+        let id = self.get_obj_id();
+        self.create_obj_with_id(id, obj, name, desc, attrs)
     }
 
-    pub fn obj_set_attr(&mut self, id: u32, key: String, val: AttrValue) -> Result<()> {
-        let mut attrs = None;
-        self.objs
-            .fetch_and_update(ser_id(id), |old| {
-                let mut obj: RawObject = deser(old.unwrap());
-                if obj.attrs.contains_key(&key) {
-                    attrs = Some(attrs! { "id": id, "old": obj.attrs[&key], "new": val });
-                } else {
-                    attrs = Some(attrs! { "id": id, "new": val });
-                }
-                // FIXME key val cloned cuz captured by closure; use batch?
-                obj.attrs.insert(key.clone(), val.clone());
-                Some(ser(&obj))
-            })
-            .unwrap();
-        self.create_log("obj.set_attr".into(), attrs.unwrap())?;
-        Ok(())
+    pub fn create_obj_with<O: ApiObj>(
+        &self,
+        name: String,
+        desc: Option<String>,
+        attrs: Option<Attrs>,
+        f: impl FnOnce(ObjId) -> StorageResult<O>,
+    ) -> StorageResult<ObjId> {
+        let id = self.get_obj_id();
+        let obj = f(id)?;
+        self.create_obj_with_id(id, obj, name, desc, attrs)
     }
 
-    pub fn obj_del_attr(&mut self, id: u32, key: &str) -> Result<()> {
-        let mut attrs = None;
-        self.objs
-            // FIXME Conditionally don't need update
-            .fetch_and_update(ser_id(id), |old| {
-                let mut obj: RawObject = deser(old.unwrap());
-                if obj.attrs.contains_key(key) {
-                    attrs = Some(attrs! { "id": id, "old": obj.attrs[key] });
-                    obj.attrs.remove(key);
-                }
-                Some(ser(&obj))
-            })
-            .unwrap();
-        if let Some(attrs) = attrs {
-            self.create_log("obj.set_attr".into(), attrs)?;
+    pub fn obj_set_desc(&self, id: ObjId, desc: Option<String>) -> StorageResult<()> {
+        let new_desc = desc.clone();
+        let mut obj: ProtoObj = deser(&self.objs.get(ser_obj_id(id))?.ok_or(StorageError::InvalidObjID(id))?);
+        if obj.desc.is_none() && desc.is_none() {
+            // Simply skip cuz no change needs to be done
+            return Ok(());
         }
+        let old_desc = obj.desc.take();
+        obj.desc = desc;
+        self.objs.insert(ser_obj_id(id), ser(&obj))?;
+        let diff = match (old_desc, new_desc) {
+            (Some(o), Some(n)) => Diff::Diff(o, n),
+            (None, Some(n)) => Diff::New(n),
+            (Some(o), None) => Diff::Del(o),
+            (None, None) => unreachable!(),
+        };
+        self.append_log(ObjSetDesc { id, diff })?;
         Ok(())
     }
 
-    pub fn get_obj(&mut self, id: u32) -> Result<Object> {
-        self.objs
-            .get(ser_id(id))
-            .unwrap()
-            .map(|o| deser::<RawObject>(&o).with_id(id))
-            .ok_or(Error::InvalidObjID(id))
+    fn obj_set_attr_raw(&self, id: ObjId, attr: String, val: Option<AttrValue>) -> StorageResult<()> {
+        let new_val = val.clone();
+        let mut obj: ProtoObj = deser(&self.objs.get(ser_obj_id(id))?.ok_or(StorageError::InvalidObjID(id))?);
+        let old_val = if let Some(ref mut attrs) = obj.attrs {
+            if !attrs.contains_key(&attr) && val.is_none() {
+                return Err(StorageError::DelNonExistent(id, attr));
+            }
+            match val {
+                Some(val) => attrs.insert(attr.clone(), val),
+                None => attrs.remove(&attr),
+            }
+        } else {
+            None
+        };
+        self.objs.insert(ser_obj_id(id), ser(&obj))?;
+        let diff = match (old_val, new_val) {
+            (Some(o), Some(n)) => Diff::Diff(o, n),
+            (None, Some(n)) => Diff::New(n),
+            (Some(o), None) => Diff::Del(o),
+            (None, None) => unreachable!(),
+        };
+        self.append_log(ObjSetAttr { id, attr, diff })?;
+        Ok(())
     }
 
-    fn filter_obj_by<F: Fn(&Object) -> bool>(
-        iter: impl Iterator<Item = sled::Result<(sled::IVec, sled::IVec)>>,
-        filter: F,
-        limit: Option<usize>,
-    ) -> Vec<Object> {
-        iter.map(|res| res.unwrap())
-            .map(|(k, v)| deser::<RawObject>(&v).with_id(deser_id(&k)))
-            .filter(filter)
-            .take(limit.unwrap_or(1))
+    pub fn obj_set_attr(&self, id: ObjId, attr: String, val: AttrValue) -> StorageResult<()> {
+        self.obj_set_attr_raw(id, attr, Some(val))
+    }
+
+    pub fn obj_set_attrs(&self, id: ObjId, attrs: Attrs) -> StorageResult<()> {
+        attrs
+            .into_iter()
+            .map(|(key, val)| self.obj_set_attr(id, key, val))
             .collect()
     }
 
-    pub fn find_obj<F: Fn(&Object) -> bool>(&mut self, filter: F, limit: Option<usize>) -> Vec<Object> {
+    pub fn obj_del_attr(&self, id: ObjId, attr: String) -> StorageResult<()> {
+        self.obj_set_attr_raw(id, attr, None)
+    }
+
+    pub fn get_obj<O: ApiObj + DeserializeOwned>(&self, id: ObjId) -> StorageResult<Obj<O>> {
+        self.objs
+            .get(ser_obj_id(id))
+            .unwrap()
+            .map(|o| deser_obj(&o).map(|r| r.with_id(id)))
+            .unwrap_or(Err(Error::InvalidObjID(id)))
+    }
+
+    pub fn set_obj<O: ApiObj>(&self, id: ObjId, obj: O) -> StorageResult<()> {
+        // TODO diff props & attrs here?
+        self.objs.insert(ser_obj_id(id), ser(&obj))?;
+        Ok(())
+    }
+
+    fn filter_script_obj_by<F: Fn(&ScriptObj) -> bool>(
+        iter: impl Iterator<Item = sled::Result<(sled::IVec, sled::IVec)>>,
+        filter: F,
+        limit: Option<usize>,
+    ) -> Vec<ScriptObj> {
+        let iter = iter
+            .map(|res| res.unwrap())
+            .map(|(k, v)| deser::<ProtoObj>(&v).with_id(deser_obj_id(&k)))
+            .filter(filter);
+        if let Some(limit) = limit {
+            iter.take(limit).collect()
+        } else {
+            iter.collect()
+        }
+    }
+
+    fn filter_obj_by<O: ApiObj + DeserializeOwned, F: Fn(&Obj<O>) -> bool>(
+        iter: impl Iterator<Item = sled::Result<(sled::IVec, sled::IVec)>>,
+        filter: F,
+        limit: Option<usize>,
+    ) -> Vec<Obj<O>> {
+        let iter = iter
+            .map(|res| res.unwrap())
+            .map(|(k, v)| deser::<RawObj<O>>(&v).with_id(deser_obj_id(&k)))
+            .filter(filter);
+        if let Some(limit) = limit {
+            iter.take(limit).collect()
+        } else {
+            iter.collect()
+        }
+    }
+
+    pub fn find_obj<O: ApiObj + DeserializeOwned, F: Fn(&Obj<O>) -> bool>(
+        &self,
+        filter: F,
+        limit: Option<usize>,
+    ) -> Vec<Obj<O>> {
         Storage::filter_obj_by(self.objs.iter().rev(), filter, limit)
     }
 
-    pub fn find_obj_old<F: Fn(&Object) -> bool>(&mut self, filter: F, limit: Option<usize>) -> Vec<Object> {
-        Storage::filter_obj_by(self.objs.iter(), filter, limit)
+    pub fn script_find_obj<F: Fn(&ScriptObj) -> bool>(&self, filter: F, limit: Option<usize>) -> Vec<ScriptObj> {
+        Storage::filter_script_obj_by(self.objs.iter().rev(), filter, limit)
     }
 
-    pub fn find_obj_from<F: Fn(&Object) -> bool>(&mut self, id: u32, filter: F, limit: Option<usize>) -> Vec<Object> {
-        Storage::filter_obj_by(self.objs.range(..ser_id(id)).rev(), filter, limit)
+    pub fn script_find_obj_old<F: Fn(&ScriptObj) -> bool>(&self, filter: F, limit: Option<usize>) -> Vec<ScriptObj> {
+        Storage::filter_script_obj_by(self.objs.iter(), filter, limit)
     }
 
-    pub fn find_obj_old_from<F: Fn(&Object) -> bool>(
-        &mut self,
-        id: u32,
+    pub fn script_find_obj_from<F: Fn(&ScriptObj) -> bool>(
+        &self,
+        id: ObjId,
         filter: F,
         limit: Option<usize>,
-    ) -> Vec<Object> {
-        Storage::filter_obj_by(self.objs.range(ser_id(id)..), filter, limit)
+    ) -> Vec<ScriptObj> {
+        Storage::filter_script_obj_by(self.objs.range(..ser_obj_id(id)).rev(), filter, limit)
+    }
+
+    pub fn script_find_obj_old_from<F: Fn(&ScriptObj) -> bool>(
+        &self,
+        id: ObjId,
+        filter: F,
+        limit: Option<usize>,
+    ) -> Vec<ScriptObj> {
+        Storage::filter_script_obj_by(self.objs.range(ser_obj_id(id)..), filter, limit)
     }
 
     pub fn create_task(
-        &mut self,
-        name: &str,
-        typ: &str,
+        &self,
+        name: String,
+        desc: Option<String>,
+        attrs: Option<Attrs>,
         deadline: OptRepeated,
         priority: u32,
-        attrs: Option<Attrs>,
-    ) -> Result<u32> {
-        // FIXME use batch (atomic) or transaction sematics
-        let id = self.get_obj_id();
-        let mut task = RawTask {
-            object: RawObject {
-                name: name.into(),
-                typ: "task".into(),
-                desc: "".into(),
-                attrs: attrs.unwrap_or_default(),
-            },
-            deadline,
-            task_typ: typ.into(),
-            priority,
-            cache: Vec::new(),
-        };
-        match task.deadline {
-            OptRepeated::Single(time) => {
-                let new_id = self.new_daughter_task(id, time)?;
-                task.cache.push(new_id);
-            }
-            OptRepeated::Repeat(ref mut repeat) => {
-                // FIXME attribute casting should be an system error and should create log entry
-                let gen_ahead = task
-                    .object
-                    .attrs
-                    .get("gen-ahead")
-                    .map(|v| v.as_u64())
-                    .flatten()
-                    .unwrap_or(5);
-                for _ in 0..gen_ahead {
-                    if let Some(next_time) = repeat.next() {
-                        let new_id = self.new_daughter_task(id, next_time)?;
-                        task.cache.push(new_id);
-                    } else {
-                        break;
+    ) -> StorageResult<ObjId> {
+        self.create_obj_with(name, desc, attrs, |id| {
+            // FIXME use batch (atomic) or transaction sematics
+            // TODO inherit notification from config 
+            let mut task = Task::new(deadline, priority, Vec::new());
+            match task.deadline {
+                OptRepeated::Single(time) => {
+                    dbg!(&time);
+                    let new_id = self.new_sub_task(id, time, None)?;
+                    task.cache.push(new_id);
+                }
+                OptRepeated::Repeat(ref mut repeat) => {
+                    // FIXME attribute casting should be an system error and should create log entry
+                    for _ in 0..task.gen_ahead {
+                        if let Some(next_time) = repeat.next() {
+                            let new_id = self.new_sub_task(id, next_time, None)?;
+                            task.cache.push(new_id);
+                        } else {
+                            break;
+                        }
                     }
                 }
             }
-        }
-        self.objs.insert(ser_id(id), ser(&task)).unwrap();
-        self.create_log("task.create".into(), attrs! { "id": id })?;
-        Ok(id)
+            Ok(task)
+        })
     }
 
-    fn new_daughter_task(&mut self, id: u32, deadline: DateTime) -> Result<u32> {
-        self.create_log("task.task".into(), attrs! { "task-id": id, "deadline": deadline })
-    }
-
-    fn get_raw_task(&mut self, id: u32) -> Result<RawTask> {
-        self.objs
-            .get(ser_id(id))
-            .unwrap()
-            .map(|t| deser::<RawTask>(&t))
-            .ok_or(Error::ObjNotTask(id))
-    }
-
-    pub fn get_task(&mut self, id: u32) -> Result<Task> {
-        self.get_raw_task(id).map(|t| t.with_id(id))
+    fn new_sub_task(&self, id: ObjId, deadline: DateTime, notifications: Option<&Vec<Duration>>) -> StorageResult<ObjId> {
+        self.create_obj_with("subtask".into(), None, None, |_| {
+            Ok(SubTask::new(id, deadline, notifications.cloned().unwrap_or_default()))
+        })
     }
 
     // FIXME Error on finished tasks? Or how to handle collision
-    pub fn task_finish(&mut self, id: u32, finished: DateTime) -> Result<()> {
-        self.log_add_attr_raw(id, "finished".into(), serde_json::to_value(finished).unwrap())?;
-        let task_log_id = self
-            .get_log(id)?
-            .attrs
-            .get("task-id")
-            .map(|v| v.as_u64())
-            .flatten()
-            .expect("task id from task log") as u32;
-        let mut task = self.get_raw_task(task_log_id)?;
+    /// id is the id for the sub task
+    pub fn task_finish(&self, id: ObjId, finished: DateTime) -> StorageResult<()> {
+        let mut sub: SubTask = self.get_obj(id)?.inner;
+        let mut task: Task = self.get_obj(sub.task_id)?.inner;
         if let OptRepeated::Repeat(ref mut repeat) = task.deadline {
-            let gen_ahead = task
-                .object
-                .attrs
-                .get("gen-ahead")
-                .map(|v| v.as_u64())
-                .flatten()
-                .unwrap_or(5);
-            let cache_size = task
-                .object
-                .attrs
-                .get("cache-size")
-                .map(|v| v.as_u64())
-                .flatten()
-                .unwrap_or(10);
-            let cache_size = cache_size + gen_ahead + 1;
+            let cache_size = task.cache_size + task.gen_ahead + 1;
             if let Some(next_time) = repeat.next() {
-                let new_id = self.new_daughter_task(id, next_time)?;
+                let new_id = self.new_sub_task(id, next_time, None)?;
                 // We only generate one cuz there can be only 1 task completed
                 task.cache.push(new_id);
                 if task.cache.len() > cache_size as usize {
                     task.cache.remove(0);
                 }
             }
-            self.objs.insert(ser_id(id), ser(&task)).unwrap();
+            sub.finished = Some(finished);
+            self.set_obj(sub.task_id, task)?;
+            self.set_obj(id, sub)?;
         }
-        self.create_log("task.finish".into(), attrs! { "id": id })?;
+        // FIXME missing logs on props & attrs setting
+        self.append_log(TaskFinish { id })?;
         Ok(())
     }
 
-    pub fn create_event(
-        &mut self,
-        name: &str,
-        typ: &str,
-        start: OptRepeated,
-        duration: Duration,
-        attrs: Option<Attrs>,
-    ) -> Result<u32> {
-        let id = self.get_obj_id();
-        let j = if let Some(attrs) = attrs {
-            json!({ "name": name, "typ": "event", "task-typ": typ, "start": start, "duration": duration, "attrs": attrs })
-        } else {
-            json!({ "name": name, "typ": "event", "task-typ": typ, "start": start, "duration": duration })
-        };
-        self.objs.insert(ser_id(id), ser(&j)).unwrap();
-        self.create_log("event.create".into(), attrs! { "id": id })?;
-        Ok(id)
-    }
-
-    pub fn get_event(&mut self, id: u32) -> Result<Event> {
-        self.objs
-            .get(ser_id(id))
-            .unwrap()
-            .map(|e| deser::<RawEvent>(&e).with_id(id))
-            .ok_or(Error::ObjNotEvent(id))
-    }
-
-    pub fn find_current(&mut self, id: u32) -> Result<Option<u32>> {
+    pub fn find_current(&self, id: ObjId) -> StorageResult<Option<ObjId>> {
         // It should
         let current_utc = Utc::now();
-        let task = self.get_raw_task(id)?;
-        // FIXME better name?
-        let balanced = task
-            .object
-            .attrs
-            .get("flavor")
-            .map(|v| v == "balanced")
-            .unwrap_or(false);
-        let unfinished = task
+        let task: Task = self.get_obj(id)?.inner;
+        let balanced = task.flavor == TaskFlavor::Balanced;
+        let sub_tasks: Vec<Obj<SubTask>> = task
             .cache
             .iter()
-            .map(|&i| self.get_log(i).unwrap())
-            .filter(|l| !l.attrs.contains_key("finished"))
+            .map(|&i| self.get_obj(i))
+            .collect::<Result<_, _>>()?;
+        let unfinished = sub_tasks.into_iter()
+            .filter(|o| o.inner.finished.is_none())
             .collect::<Vec<_>>();
 
         let deadlines = unfinished
             .iter()
-            .map(|task| Utc.timestamp(task.attrs.get("deadline").unwrap().as_i64().unwrap(), 0))
+            .map(|sub| sub.inner.deadline)
             .collect::<Vec<_>>();
         let len = unfinished.len();
         let grace = chrono::Duration::minutes(5);
@@ -547,15 +517,31 @@ impl Storage {
         for i in 0..len {
             let deadline = deadlines[i];
             let criterion = if balanced {
-                i == len - 1 || (deadline + (deadlines[i + 1] - deadline) / 2) > current_utc
+                i == len - 1 || (deadline.0 + (deadlines[i + 1].0 - deadline.0) / 2) > current_utc
             } else {
-                current_utc < deadline + grace
+                current_utc < deadline.0 + grace
             };
             if criterion {
                 return Ok(Some(unfinished[i].id));
             }
         }
         Ok(None)
+    }
+
+    pub fn create_event(
+        &self,
+        name: String,
+        start: OptRepeated,
+        duration: Duration,
+        desc: Option<String>,
+        attrs: Option<Attrs>,
+    ) -> StorageResult<ObjId> {
+        let event = Event {
+            start,
+            duration,
+        };
+        let id = self.create_obj(event, name, desc, attrs)?;
+        Ok(id)
     }
 
     pub fn export(&self) -> serde_json::Value {
@@ -565,7 +551,7 @@ impl Storage {
             .map(|r| r.unwrap())
             .enumerate()
             .map(|(i, (k, v))| {
-                assert_eq!(i as u32 + 1, deser_id(&k));
+                assert_eq!(i as u32 + 1, deser_log_id(&k).0);
                 deser(&v)
             })
             .collect();
@@ -574,8 +560,8 @@ impl Storage {
             .iter()
             .map(|r| r.unwrap())
             .enumerate()
-            .map(|(i, (k, v))| {
-                assert_eq!(i as u32 + 1, deser_id(&k));
+            .map(|(_i, (_k, v))| {
+                // assert_eq!(i as u32, deser_id(&k));
                 deser(&v)
             })
             .collect();
@@ -588,12 +574,17 @@ impl Storage {
         self.logs.clear().unwrap();
         self.objs.clear().unwrap();
         for (i, log) in data.logs.iter().enumerate() {
-            self.logs.insert(ser_id(i as u32 + 1), ser(log)).unwrap();
+            self.logs.insert(ser_log_id(LogId(i as u32 + 1)), ser(log)).unwrap();
         }
         for (i, obj) in data.objs.iter().enumerate() {
-            self.objs.insert(ser_id(i as u32 + 1), ser(obj)).unwrap();
+            self.objs.insert(ser_obj_id(ObjId(i as u32)), ser(obj)).unwrap();
         }
-        self.meta.insert("logs_id", ser_id(data.logs.len() as u32 + 1)).unwrap();
-        self.meta.insert("objs_id", ser_id(data.objs.len() as u32 + 1)).unwrap();
+        self.meta
+            .insert("logs_id", ser_log_id(LogId(data.logs.len() as u32 + 1)))
+            .unwrap();
+        self.meta
+            .insert("objs_id", ser_obj_id(ObjId(data.objs.len() as u32 + 1)))
+            .unwrap();
+        self.db.flush().unwrap();
     }
 }

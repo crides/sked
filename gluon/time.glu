@@ -70,7 +70,7 @@ let parse_time s : String -> Result String DateTime =
         do minute = integer
         seq token ':'
         do second = integer
-        match datetime.new year month day hour minute second with
+        match datetime.new_local year month day hour minute second with
         | Some dt -> wrap dt
         | None -> parser.fail "Invalid date"
     parse_full time_parser s

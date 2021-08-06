@@ -1,30 +1,44 @@
+pub mod api;
 mod kv;
+mod macros;
+pub mod time;
 
 pub use kv::*;
+pub use macros::*;
 
 use chrono::Datelike;
+use lazy_static::lazy_static;
 use thiserror::Error;
 
-use crate::script::time::{DateTime, Duration};
+use crate::storage::{
+    api::{LogId, ObjId},
+    time::{DateTime, Duration},
+};
+
+lazy_static! {
+    pub static ref STORE: Storage = Storage::new();
+}
 
 // FIXME define types (newtype?) for log and object IDs
-#[derive(Clone, Debug, Trace, VmType, Pushable, Getable, Error)]
-#[gluon_trace(skip)]
+#[derive(Debug, Error)]
+#[cfg_attr(features = "scripting", derive(Trace, VmType, Pushable, Getable), gluon_trace(skip))]
 pub enum Error {
     #[error("Deadlock")]
     Deadlock,
-    // #[error("Database error: {0}")] TODO
-    // Database(#[from] sled::Error),
+    #[error("Database error: {0}")]
+    Database(#[from] sled::Error),
     #[error("Can't compile regex '{0}'")]
     Regex(String),
     #[error("Invalid Log ID {0}")]
-    InvalidLogID(u32),
+    InvalidLogID(LogId),
     #[error("Invalid Object ID {0}")]
-    InvalidObjID(u32),
-    #[error("Object with id {0} is not an Task")]
-    ObjNotTask(u32),
-    #[error("Object with id {0} is not an Event")]
-    ObjNotEvent(u32),
+    InvalidObjID(ObjId),
+    #[error("Type mismatch with stored, expected: '{expected}', actual: '{actual}'")]
+    TypeMismatch { expected: String, actual: String },
+    #[error("Cannot delete an non-existent attribute '{1}' at object '{0}'")]
+    DelNonExistent(ObjId, String),
+    #[error("serde error: {0}")]
+    Serde(#[from] serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -33,7 +47,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 // they are set to reset state when passed from Gluon
 // FIXME use other internal states to record when to stop i.e. can't change the stop properties for public
 // interface
-#[derive(Clone, Debug, Serialize, Deserialize, VmType, Pushable, Getable)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(features = "scripting", derive(Trace, VmType, Userdata))]
 pub struct Repeated {
     /// A set of actual start times
     start: Vec<DateTime>,
@@ -41,16 +56,21 @@ pub struct Repeated {
     stop: Stop,
 
     last: Option<DateTime>,
+    /// Index into `start`, for from which start time the current time is derived from
     index: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, VmType, Pushable, Getable)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(features = "scripting", derive(Trace, VmType, Userdata))]
+#[serde(rename_all = "lowercase")]
 pub enum OptRepeated {
     Single(DateTime),
     Repeat(Repeated),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, VmType, Pushable, Getable)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(features = "scripting", derive(Trace, VmType, Userdata))]
+#[serde(rename_all = "lowercase")]
 pub enum Every {
     Time(Duration),
     Month(u32),
@@ -74,7 +94,9 @@ impl Every {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, VmType, Pushable, Getable)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(features = "scripting", derive(Trace, VmType, Userdata))]
+#[serde(rename_all = "lowercase")]
 pub enum Stop {
     Nonstop,
     Stopped,
@@ -82,6 +104,7 @@ pub enum Stop {
     After(DateTime),
 }
 
+// TODO `start[0]` + `every` < `start[n]`?
 impl Repeated {
     pub fn new(mut start: Vec<DateTime>, every: Every, stop: Stop) -> Repeated {
         start.sort();
@@ -167,7 +190,7 @@ mod test {
 
     #[test]
     fn test_repeat() {
-        use super::{DateTime, Every, Repeated, Stop};
+        use super::{Every, Repeated, Stop};
         let repeat = Repeated::new(
             vec![
                 datetime(2020, 12, 21, 10, 0, 0),
